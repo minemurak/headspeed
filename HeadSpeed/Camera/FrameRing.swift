@@ -19,6 +19,11 @@ final class FrameRing {
         times = [Double](repeating: 0, count: capacity)
     }
 
+    /// Starts over, keeping the allocated buffers.
+    func reset() {
+        total = 0
+    }
+
     func write(time: Double, _ fill: (UnsafeMutablePointer<UInt8>) -> Void) {
         let slot = total % capacity
         buffers[slot].withUnsafeMutableBufferPointer { fill($0.baseAddress!) }

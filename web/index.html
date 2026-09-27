@@ -660,13 +660,16 @@ $('#btn-impact').onclick = async () => {
     msg('サンプルのインパクトのコマへ移動しました。'); return;
   }
   if (!curFile) return;
+  if (curFile.size > 300*1024*1024){
+    msg('動画が大きすぎるため音声を解析できません（300MBまで）。スライダーでインパクトを探してください。', true); return;
+  }
   msg('音声を解析しています…');
+  let ac = null;
   try{
     const buf = await curFile.arrayBuffer();
     const AC = window.AudioContext || window.webkitAudioContext;
-    const ac = new AC();
+    ac = new AC();
     const audio = await new Promise((res, rej) => { const p = ac.decodeAudioData(buf, res, rej); if (p && p.catch) p.catch(rej); });
-    if (ac.close) ac.close();
     const d = audio.getChannelData(0), sr = audio.sampleRate;
     let mi = 0, mv = 0;
     for (let i=0;i<d.length;i++){ const a = Math.abs(d[i]); if (a > mv){ mv = a; mi = i; } }
@@ -678,21 +681,31 @@ $('#btn-impact').onclick = async () => {
     msg(`打球音を ${t.toFixed(3)} 秒に見つけました。音は映像と数コマずれることがあるので、前後のコマでボールが動き出す瞬間を確認してください。`);
   }catch(err){
     msg('この動画から音声を読み取れませんでした。スロー保存の動画は音声がないことがあります。スライダーでインパクトを探してください。', true);
+  }finally{
+    if (ac && ac.close){ const p = ac.close(); if (p && p.catch) p.catch(() => {}); }
   }
 };
 
 /* ---------- history ---------- */
 const HKEY = 'hs-lab-history-v1';
+const numOr = x => (typeof x === 'number' && isFinite(x)) ? x : null;
+const clubName = c => (typeof c === 'string' && Object.prototype.hasOwnProperty.call(CLUBS, c)) ? CLUBS[c].name : '?';
+const validDate = at => { const d = new Date(at); return isNaN(d.getTime()) ? null : d; };
 function renderHistory(){
-  const h = store.get(HKEY, []);
-  const f = (x,d) => x==null ? '—' : x.toFixed(d);
+  try{ renderHistoryTable(); }
+  catch(e){ $('#hist').innerHTML = `<tr><td colspan="9" class="empty">履歴を表示できませんでした。</td></tr>`; }
+}
+function renderHistoryTable(){
+  let h = store.get(HKEY, []);
+  if (!Array.isArray(h)) h = [];
+  const f = (x,d) => numOr(x)==null ? '—' : x.toFixed(d);
   if (!h.length){ $('#hist').innerHTML = `<tr><td colspan="9" class="empty">まだ保存した計測はありません。測定タブの「この結果を履歴に保存」で追加できます。</td></tr>`; return; }
-  const avg = key => { const v = h.map(r=>r[key]).filter(x=>x!=null); return v.length ? v.reduce((a,b)=>a+b,0)/v.length : null; };
-  $('#hist').innerHTML = h.map((r,i) => `<tr>
-    <td class="num" style="text-align:left">${new Date(r.at).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
-    <td>${CLUBS[r.club]?.name || r.club}${r.sample?' <small style="color:var(--muted)">(サンプル)</small>':''}</td>
+  const avg = key => { const v = h.map(r=>numOr(r && r[key])).filter(x=>x!=null); return v.length ? v.reduce((a,b)=>a+b,0)/v.length : null; };
+  $('#hist').innerHTML = h.map((r,i) => (!r || typeof r !== 'object') ? '' : `<tr>
+    <td class="num" style="text-align:left">${validDate(r.at)?.toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) ?? '—'}</td>
+    <td>${clubName(r.club)}${r.sample?' <small style="color:var(--muted)">(サンプル)</small>':''}</td>
     <td class="num">${f(r.hs,1)}</td><td class="num">${f(r.bs,1)}</td><td class="num">${f(r.smash,2)}</td>
-    <td class="num">${f(r.launch,1)}°</td><td class="num">${f(r.attack,1)}°</td><td class="num">${r.tempo?r.tempo.toFixed(1)+':1':'—'}</td>
+    <td class="num">${f(r.launch,1)}°</td><td class="num">${f(r.attack,1)}°</td><td class="num">${numOr(r.tempo)?r.tempo.toFixed(1)+':1':'—'}</td>
     <td><button class="x btn" data-del="${i}" aria-label="削除" style="padding:2px 8px">削除</button></td></tr>`).join('') +
     `<tr><td colspan="2"><b>平均（${h.length}件）</b></td><td class="num"><b>${f(avg('hs'),1)}</b></td><td class="num"><b>${f(avg('bs'),1)}</b></td><td class="num"><b>${f(avg('smash'),2)}</b></td><td class="num">${f(avg('launch'),1)}°</td><td class="num">${f(avg('attack'),1)}°</td><td class="num">${avg('tempo')!=null?avg('tempo').toFixed(1)+':1':'—'}</td><td></td></tr>`;
 }
@@ -703,16 +716,20 @@ $('#hist').addEventListener('click', e => {
 $('#btn-save').onclick = () => {
   const r = S.last || compute();
   if (r.hs==null && r.smash==null && r.bs==null){ $('#save-note').textContent = 'ヘッドかボールの計測が終わってから保存してください。'; return; }
-  const h = store.get(HKEY, []);
+  let h = store.get(HKEY, []);
+  if (!Array.isArray(h)) h = [];
   h.unshift({at:Date.now(), club:$('#club').value, hs:r.hs??null, bs:r.bs??null, smash:r.smash??null, launch:r.launch??null, attack:r.attack??null, tempo:r.tempo?r.tempo.ratio:null, sample:S.isSample});
   store.set(HKEY, h); renderHistory();
   $('#save-note').textContent = `保存しました（${h.length}件）。履歴タブで一覧と平均を見られます。`;
 };
 $('#btn-csv').onclick = () => {
-  const h = store.get(HKEY, []);
-  const f = (x,d) => x==null ? '' : x.toFixed(d);
+  let h = store.get(HKEY, []);
+  if (!Array.isArray(h)) h = [];
+  const f = (x,d) => numOr(x)==null ? '' : x.toFixed(d);
+  const p2 = n => String(n).padStart(2,'0');
+  const date = at => { const d = validDate(at); return d ? `${d.getFullYear()}/${p2(d.getMonth()+1)}/${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}` : ''; };
   const csv = ['日時,クラブ,ヘッドスピード(m/s),ボール初速(m/s),ミート率,打ち出し角,入射角,テンポ']
-    .concat(h.map(r => [new Date(r.at).toISOString(), CLUBS[r.club]?.name||r.club, f(r.hs,1), f(r.bs,1), f(r.smash,2), f(r.launch,1), f(r.attack,1), f(r.tempo,2)].join(','))).join('\n');
+    .concat(h.filter(r => r && typeof r === 'object').map(r => [date(r.at), clubName(r.club), f(r.hs,1), f(r.bs,1), f(r.smash,2), f(r.launch,1), f(r.attack,1), f(r.tempo,2)].join(','))).join('\n');
   const box = $('#csvbox');
   const fallback = () => { box.hidden = false; box.value = csv; box.select(); $('#btn-csv').textContent = '下の枠から手動でコピー'; };
   try{

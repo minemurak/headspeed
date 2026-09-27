@@ -3,3 +3,11 @@ xcuserdata/
 DerivedData/
 .DS_Store
 __pycache__/
+HeadSpeed.xcodeproj/
+HeadSpeed/Info.plist
+build/
+*.xcarchive
+*.ipa
+Payload/
+*.p8
+AuthKey_*.p8
