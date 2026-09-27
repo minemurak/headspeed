@@ -31,15 +31,29 @@
 
 打球音は使っていません。練習場では隣の打席の音で誤作動するため、映像の変化でトリガーしています。
 
-## ビルド方法（Mac が必要）
+## iPhoneへの入れ方（Mac不要・TestFlight）
 
-1. Xcode 15 以降をインストール
-2. XcodeGen をインストール: `brew install xcodegen`
-3. このフォルダで `xcodegen` を実行 → `HeadSpeed.xcodeproj` ができます
-4. Xcode で開き、Signing & Capabilities で自分の Team を選ぶ（無料の Apple ID で可）
-5. iPhone をつないで実行（シミュレーターにはカメラがないため動きません）
+ビルドと署名はGitHub上のMac環境で行います。必要な作業はすべてブラウザとiPhoneでできます。
 
-XcodeGen を使わない場合は、Xcode で新規 iOS App（SwiftUI）を作り、`HeadSpeed/` 以下の .swift ファイルを追加し、Info.plist にカメラの使用目的（NSCameraUsageDescription）と横向き（Landscape Right）のみの設定をしてください。
+1. **Apple Developer Program に登録**（有料・年額）。iPhoneの「Apple Developer」アプリから登録できます。
+2. **バンドルIDを登録**：developer.apple.com → Certificates, Identifiers & Profiles → Identifiers → ＋ → App IDs → App。Bundle ID に `com.minemurak.headspeed`（Explicit）を入力。
+3. **App Store Connect にアプリを作成**：appstoreconnect.apple.com → アプリ → ＋ → 新規App。プラットフォームiOS、名前は任意、バンドルIDは2で登録したもの、SKUは任意（例 headspeed）。
+4. **APIキーを作成**：App Store Connect → ユーザとアクセス → 統合 → App Store Connect API → チームキー → ＋。アクセスは **Admin**（署名証明書を自動作成するため）。作成後、AuthKey_XXXX.p8 をダウンロード（1回しかダウンロードできません）。
+5. **GitHubにシークレットを登録**：リポジトリ → Settings → Secrets and variables → Actions → New repository secret。
+   - `APPLE_TEAM_ID`：developer.apple.com → アカウント → メンバーシップ詳細のチームID（10文字）
+   - `ASC_KEY_ID`：4で作ったキーのキーID
+   - `ASC_ISSUER_ID`：キー一覧の上に表示される発行者ID
+   - `ASC_KEY_P8`：ダウンロードした .p8 ファイルの中身をすべて貼り付け
+6. **アップロード**：Actions → testflight → Run workflow。以降は main に変更が入るたびに自動でアップロードされます。
+7. **iPhoneに入れる**：App Store Connect → TestFlight → 内部テスト にグループを作って自分を追加。iPhoneに「TestFlight」アプリを入れると、ヘッドスピードが表示されます（処理に10〜30分ほどかかることがあります）。
+
+シークレットが未登録のあいだ、testflight ワークフローは何もせずに終了します。
+
+## Macでビルドする場合
+
+1. Xcode 16 以降と XcodeGen（`brew install xcodegen`）をインストール
+2. このフォルダで `xcodegen` を実行し、`HeadSpeed.xcodeproj` を開く
+3. Signing & Capabilities で Team を選び、iPhone をつないで実行（シミュレーターにはカメラがないため動きません）
 
 ## 撮影のしかた
 
@@ -75,7 +89,7 @@ reference/
 
 ## 既知の制約・未確認の点
 
-- Swift コードはこの環境でコンパイルできていません（Linux のため）。最初のビルドで小さな修正が必要になる可能性があります。
+- GitHub Actions でコンパイルが通ることは確認済みです（`build` ワークフロー）。
 - 実機映像での精度は未検証です。実際の芝・マット・照明で閾値の調整が必要になるかもしれません。
 - 端末の向きは「横向き・充電口が右」を前提にしています。プレビューが上下逆に見える場合は `CameraPreview.swift` の回転角を調整してください。
 - 入射角はスイング半径をクラブ別に仮定した補正値です。

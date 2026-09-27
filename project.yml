@@ -1,6 +1,6 @@
 name: HeadSpeed
 options:
-  bundleIdPrefix: com.example
+  bundleIdPrefix: com.minemurak
   deploymentTarget:
     iOS: "16.0"
 targets:
@@ -8,6 +8,7 @@ targets:
     type: application
     platform: iOS
     sources: [HeadSpeed]
+    scheme: {}
     info:
       path: HeadSpeed/Info.plist
       properties:
@@ -17,9 +18,12 @@ targets:
         UIRequiresFullScreen: true
         UIStatusBarHidden: true
         UILaunchScreen: {}
+        ITSAppUsesNonExemptEncryption: false
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.headspeed
+        PRODUCT_BUNDLE_IDENTIFIER: com.minemurak.headspeed
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_VERSION: "5.9"
         MARKETING_VERSION: "0.1"
