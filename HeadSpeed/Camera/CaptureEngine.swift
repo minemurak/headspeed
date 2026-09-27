@@ -1,6 +1,7 @@
 import AVFoundation
 import Combine
 import CoreMedia
+import CoreMotion
 import Foundation
 
 enum MeasureState: Equatable {
@@ -37,6 +38,7 @@ final class CaptureEngine: NSObject, ObservableObject {
     private let lock = NSLock()
     private var clubValue: Club = .driver
     private var device: AVCaptureDevice?
+    private let motion = CMMotionManager()
     private var configured = false
 
     // MARK: Capture-queue state
@@ -59,6 +61,7 @@ final class CaptureEngine: NSObject, ObservableObject {
     private var postRemaining = 0
     private var resumeAt = 0.0
     private var armedShutter: Double?
+    private var armedPitch = 0.0
     private var lastShutterPublish = 0.0
 
     // MARK: Lifecycle
@@ -70,6 +73,10 @@ final class CaptureEngine: NSObject, ObservableObject {
                 self.publishState(.unavailable("カメラへのアクセスが許可されていません。設定アプリの「ヘッドスピード」でカメラを許可してください。"))
                 return
             }
+            if self.motion.isDeviceMotionAvailable && !self.motion.isDeviceMotionActive {
+                self.motion.deviceMotionUpdateInterval = 0.2
+                self.motion.startDeviceMotionUpdates()
+            }
             self.queue.async {
                 if !self.configured { self.configure() }
                 if self.configured && !self.session.isRunning { self.session.startRunning() }
@@ -78,6 +85,7 @@ final class CaptureEngine: NSObject, ObservableObject {
     }
 
     func stop() {
+        motion.stopDeviceMotionUpdates()
         queue.async { if self.session.isRunning { self.session.stopRunning() } }
     }
 
@@ -335,6 +343,7 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
         overCount = 0
         setExposureLocked(true)
         armedShutter = device?.exposureDuration.seconds
+        armedPitch = cameraPitch()
         qState = .armed
         publishState(.armed)
     }
@@ -395,6 +404,13 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
         publishBall(nil)
     }
 
+    /// How far the camera looks down, in radians (0 = level, face-on from the side).
+    /// The rear camera looks along the device's -z axis, so the downward tilt is asin(-gravity.z).
+    private func cameraPitch() -> Double {
+        guard let g = motion.deviceMotion?.gravity else { return 0 }
+        return asin(max(-1, min(1, -g.z)))
+    }
+
     // MARK: Analysis
 
     private func runAnalysis() {
@@ -404,7 +420,8 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
                              ballX: ball.x / Double(g.step),
                              ballY: (ball.y - Double(g.y0)) / Double(g.step),
                              ballD: ball.d / Double(g.step),
-                             triggerIndex: triggerIndex - snap.firstIndex)
+                             triggerIndex: triggerIndex - snap.firstIndex,
+                             cameraPitch: armedPitch)
         let eTimes = energyTimes, eVals = energyVals
         let shutter = armedShutter
         lock.lock(); let club = clubValue; lock.unlock()

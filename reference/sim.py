@@ -2,7 +2,9 @@
 import numpy as np, math
 
 def render(hs=42.0, bs=62.0, launch=12.0, attack=-3.0, d=24.0, direction=+1, fps=240.0,
-           W=900, H=320, noise=4.0, drop=None, seed=0, exposure=1/1000, flicker=2.0):
+           W=900, H=320, noise=4.0, drop=None, seed=0, exposure=1/1000, flicker=2.0, pitch=0.0):
+    # pitch: camera looking down by this many degrees; vertical motion shrinks by cos(pitch)
+    cp = math.cos(math.radians(pitch))
     rng = np.random.default_rng(seed)
     mmpx = 42.67 / d
     by = H - 2.6*d            # ball center row
@@ -26,12 +28,12 @@ def render(hs=42.0, bs=62.0, launch=12.0, attack=-3.0, d=24.0, direction=+1, fps
     Cy = face[1] - R*math.cos(th_imp)
     def head_pos(tau):
         th = th_imp + om*tau
-        return Cx + direction*R*math.sin(th), Cy + R*math.cos(th), th
+        return Cx + direction*R*math.sin(th), by + (Cy + R*math.cos(th) - by)*cp, th
     bvpx = bs*1000/mmpx
     la = math.radians(launch)
     def ball_pos(tau):
         if tau <= 0: return bx, by
-        return bx + direction*bvpx*tau*math.cos(la), by - bvpx*tau*math.sin(la)
+        return bx + direction*bvpx*tau*math.cos(la), by - bvpx*tau*math.sin(la)*cp
     ts = []
     frames = []
     n_pre, n_post = 150, 36
