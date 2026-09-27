@@ -63,6 +63,7 @@ final class CaptureEngine: NSObject, ObservableObject {
     private var armedShutter: Double?
     private var armedPitch = 0.0
     private var lastShutterPublish = 0.0
+    private var lastFrameTime = 0.0
 
     // MARK: Lifecycle
 
@@ -73,9 +74,11 @@ final class CaptureEngine: NSObject, ObservableObject {
                 self.publishState(.unavailable("カメラへのアクセスが許可されていません。設定アプリの「ヘッドスピード」でカメラを許可してください。"))
                 return
             }
-            if self.motion.isDeviceMotionAvailable && !self.motion.isDeviceMotionActive {
-                self.motion.deviceMotionUpdateInterval = 0.2
-                self.motion.startDeviceMotionUpdates()
+            DispatchQueue.main.async {
+                if self.motion.isDeviceMotionAvailable && !self.motion.isDeviceMotionActive {
+                    self.motion.deviceMotionUpdateInterval = 0.2
+                    self.motion.startDeviceMotionUpdates()
+                }
             }
             self.queue.async {
                 if !self.configured { self.configure() }
@@ -85,8 +88,11 @@ final class CaptureEngine: NSObject, ObservableObject {
     }
 
     func stop() {
-        motion.stopDeviceMotionUpdates()
-        queue.async { if self.session.isRunning { self.session.stopRunning() } }
+        DispatchQueue.main.async { self.motion.stopDeviceMotionUpdates() }
+        queue.async {
+            if self.session.isRunning { self.session.stopRunning() }
+            if self.qState == .armed || self.qState == .analyzing { self.disarm(resumeAfter: 0) }
+        }
     }
 
     private func configure() {
@@ -94,8 +100,7 @@ final class CaptureEngine: NSObject, ObservableObject {
         session.sessionPreset = .inputPriority
         guard let dev = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
               let input = try? AVCaptureDeviceInput(device: dev), session.canAddInput(input) else {
-            session.commitConfiguration()
-            publishState(.unavailable("背面カメラを使えません。"))
+            abortConfiguration("背面カメラを使えません。", input: nil, output: nil)
             return
         }
         session.addInput(input)
@@ -104,15 +109,13 @@ final class CaptureEngine: NSObject, ObservableObject {
         output.alwaysDiscardsLateVideoFrames = true
         output.setSampleBufferDelegate(self, queue: queue)
         guard session.canAddOutput(output) else {
-            session.commitConfiguration()
-            publishState(.unavailable("カメラの出力を設定できませんでした。"))
+            abortConfiguration("カメラの出力を設定できませんでした。", input: input, output: nil)
             return
         }
         session.addOutput(output)
 
         guard let picked = Self.pickFormat(dev) else {
-            session.commitConfiguration()
-            publishState(.unavailable("この端末は120fps以上の撮影に対応していません。"))
+            abortConfiguration("このiPhoneは240fps撮影に対応していないため計測できません。", input: input, output: output)
             return
         }
         let (format, fps) = picked
@@ -128,8 +131,7 @@ final class CaptureEngine: NSObject, ObservableObject {
             if dev.isFocusModeSupported(.continuousAutoFocus) { dev.focusMode = .continuousAutoFocus }
             dev.unlockForConfiguration()
         } catch {
-            session.commitConfiguration()
-            publishState(.unavailable("カメラを設定できませんでした。"))
+            abortConfiguration("カメラを設定できませんでした。", input: input, output: output)
             return
         }
         session.commitConfiguration()
@@ -147,7 +149,15 @@ final class CaptureEngine: NSObject, ObservableObject {
         publishState(.searching)
     }
 
-    /// Highest frame rate up to 240fps, preferring 1080p, then 720p.
+    /// Removes what was added so a later configure() can start from scratch.
+    private func abortConfiguration(_ message: String, input: AVCaptureInput?, output: AVCaptureOutput?) {
+        if let output { session.removeOutput(output) }
+        if let input { session.removeInput(input) }
+        session.commitConfiguration()
+        publishState(.unavailable(message))
+    }
+
+    /// 240fps format (the analyzer's frame counts assume it), preferring 1080p, then 720p.
     private static func pickFormat(_ dev: AVCaptureDevice) -> (AVCaptureDevice.Format, Int)? {
         var best: (format: AVCaptureDevice.Format, fps: Int, score: Int)?
         for f in dev.formats {
@@ -156,8 +166,8 @@ final class CaptureEngine: NSObject, ObservableObject {
             let dims = CMVideoFormatDescriptionGetDimensions(f.formatDescription)
             guard dims.width <= 1920, dims.width >= 1280 else { continue }
             let maxFps = f.videoSupportedFrameRateRanges.map { $0.maxFrameRate }.max() ?? 0
-            guard maxFps >= 120 else { continue }
-            let fps = maxFps >= 240 ? 240 : 120
+            guard maxFps >= 240 else { continue }
+            let fps = 240
             let score = fps * 10_000 + Int(dims.width) + (sub == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange ? 1 : 0)
             if best == nil || score > best!.score { best = (f, fps, score) }
         }
@@ -201,6 +211,13 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let t = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+        let gap = t - lastFrameTime
+        lastFrameTime = t
+        if (qState == .armed || qState == .analyzing) && gap > 0.1 {
+            // Frames stopped (background, interruption): the ring no longer holds a continuous swing.
+            disarm(resumeAfter: t + 0.5)
+            return
+        }
         CVPixelBufferLockBaseAddress(pb, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
         guard let base = CVPixelBufferGetBaseAddressOfPlane(pb, 0) else { return }
@@ -322,9 +339,15 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
         let rows = y1 - y0
         var step = 1
         while (frameW / step) * (rows / step) > 460_000 { step += 1 }
-        strip = (y0, step, frameW / step, rows / step)
+        let sw = frameW / step, sh = rows / step
+        strip = (y0, step, sw, sh)
         // ~1 s of history at 240fps; the analyzer needs 110 frames before impact.
-        ring = FrameRing(capacity: 240, width: frameW / step, height: rows / step)
+        if let r = ring, r.capacity == 240, r.width == sw, r.height == sh {
+            r.reset()
+        } else {
+            ring = nil
+            ring = FrameRing(capacity: 240, width: sw, height: sh)
+        }
 
         coreIdx = []
         coreRef = []
@@ -342,7 +365,11 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
         armedBall = fix
         overCount = 0
         setExposureLocked(true)
-        armedShutter = device?.exposureDuration.seconds
+        if let s = device?.exposureDuration.seconds, s.isFinite, s > 0 {
+            armedShutter = s
+        } else {
+            armedShutter = nil
+        }
         armedPitch = cameraPitch()
         qState = .armed
         publishState(.armed)
@@ -390,7 +417,6 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
     }
 
     private func disarm(resumeAfter: Double) {
-        ring = nil
         strip = nil
         armedBall = nil
         candidate = nil
@@ -425,8 +451,6 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
         let eTimes = energyTimes, eVals = energyVals
         let shutter = armedShutter
         lock.lock(); let club = clubValue; lock.unlock()
-        // Release the ring before analysis so its buffers are not duplicated.
-        self.ring = nil
 
         analysisQueue.async {
             let m = SwingAnalyzer.analyze(clip, club: club)

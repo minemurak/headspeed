@@ -2,10 +2,12 @@ import AVFoundation
 import Combine
 
 /// Reads the result aloud so the golfer does not have to walk to the phone.
-final class Announcer: ObservableObject {
+final class Announcer: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     private let synth = AVSpeechSynthesizer()
 
-    init() {
+    override init() {
+        super.init()
+        synth.delegate = self
         try? AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers, .duckOthers])
     }
 
@@ -19,5 +21,19 @@ final class Announcer: ObservableObject {
         u.rate = 0.52
         synth.stopSpeaking(at: .immediate)
         synth.speak(u)
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        deactivateIfIdle(synthesizer)
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        deactivateIfIdle(synthesizer)
+    }
+
+    /// Lets other audio (music) return to full volume after ducking.
+    private func deactivateIfIdle(_ synthesizer: AVSpeechSynthesizer) {
+        guard !synthesizer.isSpeaking else { return }
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 }

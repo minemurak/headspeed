@@ -7,7 +7,11 @@ targets:
   HeadSpeed:
     type: application
     platform: iOS
-    sources: [HeadSpeed]
+    sources:
+      - path: HeadSpeed
+        excludes: [PrivacyInfo.xcprivacy]
+      - path: HeadSpeed/PrivacyInfo.xcprivacy
+        buildPhase: resources
     scheme: {}
     info:
       path: HeadSpeed/Info.plist

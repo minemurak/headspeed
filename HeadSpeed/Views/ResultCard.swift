@@ -37,7 +37,7 @@ struct ResultCard: View {
                 }
                 GridRow {
                     metric("テンポ", result.tempo.map { "\(Fmt.num($0, 1)) : 1" })
-                    metric("シャッター", result.shutter.map { "1/\(Int((1 / $0).rounded()))" })
+                    metric("シャッター", result.shutter.flatMap { (s: Double) -> String? in s.isFinite && s > 0 ? "1/\(Int((1 / s).rounded()))" : nil })
                 }
             }
 
