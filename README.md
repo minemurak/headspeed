@@ -51,7 +51,7 @@
 
 ## Macでビルドする場合
 
-1. Xcode 16 以降と XcodeGen（`brew install xcodegen`）をインストール
+1. Xcode 26 以降と XcodeGen（`brew install xcodegen`）をインストール
 2. このフォルダで `xcodegen` を実行し、`HeadSpeed.xcodeproj` を開く
 3. Signing & Capabilities で Team を選び、iPhone をつないで実行（シミュレーターにはカメラがないため動きません）
 
