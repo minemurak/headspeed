@@ -1,0 +1,46 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ios:
+    name: iOS build (unsigned)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen
+      - name: Build for device (no signing)
+        run: |
+          set -o pipefail
+          xcodebuild -project HeadSpeed.xcodeproj -target HeadSpeed \
+            -sdk iphoneos -configuration Release \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build | tee build.log | grep -E "error:|warning:|BUILD" || true
+          test -d build/Release-iphoneos/HeadSpeed.app
+      - name: Package unsigned .ipa
+        run: |
+          mkdir -p Payload
+          cp -R build/Release-iphoneos/HeadSpeed.app Payload/
+          zip -qr HeadSpeed-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HeadSpeed-unsigned-ipa
+          path: HeadSpeed-unsigned.ipa
+
+  analysis:
+    name: Analyzer accuracy on synthetic swings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy
+      - run: python test.py
+        working-directory: reference
