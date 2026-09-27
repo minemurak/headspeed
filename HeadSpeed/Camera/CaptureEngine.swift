@@ -91,7 +91,8 @@ final class CaptureEngine: NSObject, ObservableObject {
         DispatchQueue.main.async { self.motion.stopDeviceMotionUpdates() }
         queue.async {
             if self.session.isRunning { self.session.stopRunning() }
-            if self.qState == .armed || self.qState == .analyzing { self.disarm(resumeAfter: 0) }
+            // An in-flight analysis works on its own snapshot and disarms when it finishes.
+            if self.qState == .armed { self.disarm(resumeAfter: 0) }
         }
     }
 
@@ -213,7 +214,7 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
         let t = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
         let gap = t - lastFrameTime
         lastFrameTime = t
-        if (qState == .armed || qState == .analyzing) && gap > 0.1 {
+        if qState == .armed && gap > 0.1 {
             // Frames stopped (background, interruption): the ring no longer holds a continuous swing.
             disarm(resumeAfter: t + 0.5)
             return
