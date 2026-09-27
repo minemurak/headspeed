@@ -31,7 +31,10 @@ def linfit(t, v):
     slope = ((t - tm)*(v - vm)).sum()/den
     return slope, vm - slope*tm
 
-def analyze(frames, times, ball, trig, club='1W', energy=None):
+def analyze(frames, times, ball, trig, club='1W', energy=None, pitch=0.0):
+    # pitch: degrees the camera looks down (face-on from above); image vertical motion is
+    # the true vertical motion times cos(pitch), so divide it back out
+    ycorr = 1/math.cos(math.radians(min(max(pitch, 0.0), 60.0)))
     bx, by, d = ball
     n = len(frames); H, W = frames[0].shape
     F = [f.astype(np.int16) for f in frames]
@@ -86,7 +89,7 @@ def analyze(frames, times, ball, trig, club='1W', energy=None):
         t = [p[0] for p in clean]
         vx, _ = linfit(t, [p[1] for p in clean])
         ysv = [p[2] for p in clean]
-        vy = linfit(t, ysv)[0] if not any(math.isnan(v) for v in ysv) else 0.0
+        vy = linfit(t, ysv)[0]*ycorr if not any(math.isnan(v) for v in ysv) else 0.0
         vy = max(-abs(vx)*0.27, min(abs(vx)*0.27, vy))
         res['headPxS'] = math.hypot(vx, vy)
         res['hs'] = res['headPxS']*mmpx/1000
@@ -135,7 +138,7 @@ def analyze(frames, times, ball, trig, club='1W', energy=None):
     cleanb = cleanb[:4]
     if len(cleanb) >= 2:
         t = [p[0] for p in cleanb]
-        vx, _ = linfit(t, [p[1] for p in cleanb]); vy, _ = linfit(t, [p[2] for p in cleanb])
+        vx, _ = linfit(t, [p[1] for p in cleanb]); vy, _ = linfit(t, [p[2] for p in cleanb]); vy *= ycorr
         res['ballPxS'] = math.hypot(vx, vy)
         res['bs'] = res['ballPxS']*mmpx/1000
         res['launch'] = math.degrees(math.atan2(-vy, abs(vx)))

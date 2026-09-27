@@ -8,6 +8,7 @@ struct SwingClip {
     let ballY: Double
     let ballD: Double            // ball diameter, strip pixels
     let triggerIndex: Int        // first frame where the ball patch changed
+    var cameraPitch = 0.0        // radians the camera looks down (face-on from above)
 }
 
 struct SwingMeasurement {
@@ -35,6 +36,8 @@ enum SwingAnalyzer {
         let bx = clip.ballX, by = clip.ballY, d = clip.ballD
         let trig = clip.triggerIndex
         let mmPerPx = ballDiameterMM / d
+        // Looking down at the swing shrinks vertical motion by cos(pitch); divide it back out.
+        let yCorr = 1 / cos(min(max(clip.cameraPitch, 0), 60 * .pi / 180))
 
         // Background: per-pixel median of five frames well before impact.
         let bgIdx = [110, 95, 80, 65, 50].map { max(0, trig - $0) }
@@ -142,7 +145,7 @@ enum SwingAnalyzer {
             let t = clean.map { $0.t }
             let vx = linearFit(t, clean.map { $0.e }).slope
             var vy = 0.0
-            if !clean.contains(where: { $0.y.isNaN }) { vy = linearFit(t, clean.map { $0.y }).slope }
+            if !clean.contains(where: { $0.y.isNaN }) { vy = linearFit(t, clean.map { $0.y }).slope * yCorr }
             vy = max(-abs(vx) * 0.27, min(abs(vx) * 0.27, vy))
             let pxs = hypot(vx, vy)
             headPxS = pxs
@@ -205,7 +208,7 @@ enum SwingAnalyzer {
         if cleanB.count >= 2 {
             let t = cleanB.map { $0.t }
             let vx = linearFit(t, cleanB.map { $0.x }).slope
-            let vy = linearFit(t, cleanB.map { $0.y }).slope
+            let vy = linearFit(t, cleanB.map { $0.y }).slope * yCorr
             let pxs = hypot(vx, vy)
             ballPxS = pxs
             out.ballSpeed = pxs * mmPerPx / 1000
