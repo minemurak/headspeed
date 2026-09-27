@@ -13,6 +13,8 @@ targets:
       path: HeadSpeed/Info.plist
       properties:
         CFBundleDisplayName: ヘッドスピード
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSCameraUsageDescription: スイングを240fpsで撮影し、ヘッドスピードとミート率を自動で計測します。
         UISupportedInterfaceOrientations: [UIInterfaceOrientationLandscapeRight]
         UIRequiresFullScreen: true
@@ -26,5 +28,5 @@ targets:
         CODE_SIGN_STYLE: Automatic
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_VERSION: "5.9"
-        MARKETING_VERSION: "0.1"
+        MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
