@@ -1,0 +1,26 @@
+name: HeadSpeed
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "16.0"
+targets:
+  HeadSpeed:
+    type: application
+    platform: iOS
+    sources: [HeadSpeed]
+    info:
+      path: HeadSpeed/Info.plist
+      properties:
+        CFBundleDisplayName: ヘッドスピード
+        NSCameraUsageDescription: スイングを240fpsで撮影し、ヘッドスピードとミート率を自動で計測します。
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationLandscapeRight]
+        UIRequiresFullScreen: true
+        UIStatusBarHidden: true
+        UILaunchScreen: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.headspeed
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.9"
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"

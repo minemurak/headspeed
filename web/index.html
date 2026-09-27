@@ -1,0 +1,741 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ヘッドスピード計測ラボ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap">
+<style>
+:root{
+  --bg:#EEF2EE; --surface:#FFFFFF; --surface-2:#E3E9E3; --ink:#152019; --muted:#56655B; --line:#CFD8D0;
+  --accent:#1B6A43; --accent-ink:#FFFFFF; --flag:#C98E0A;
+  --good:#1D7A4A; --warn:#A8690F; --bad:#B03A2A;
+  --stage:#0B100D;
+  --jp:"Zen Kaku Gothic New","Hiragino Sans","Noto Sans JP","Yu Gothic",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --bg:#0D1310; --surface:#151D18; --surface-2:#1E2922; --ink:#E3ECE5; --muted:#92A398; --line:#2A372F;
+    --accent:#5BC68C; --accent-ink:#0B130E; --flag:#E6B53B;
+    --good:#5BC68C; --warn:#E3A541; --bad:#F07A66;
+    --stage:#050806;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#0D1310; --surface:#151D18; --surface-2:#1E2922; --ink:#E3ECE5; --muted:#92A398; --line:#2A372F;
+  --accent:#5BC68C; --accent-ink:#0B130E; --flag:#E6B53B;
+  --good:#5BC68C; --warn:#E3A541; --bad:#F07A66;
+  --stage:#050806;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{background:var(--bg);color:var(--ink);font-family:var(--jp);font-size:14px;line-height:1.6}
+.app{max-width:1240px;margin:0 auto;padding-inline:16px;padding-block:18px 48px;display:flex;flex-direction:column;gap:16px}
+header{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px}
+.brand h1{margin:0;font-size:22px;font-weight:700;letter-spacing:.02em;text-wrap:balance}
+.brand p{margin:2px 0 0;color:var(--muted);font-size:13px}
+.tabs{display:flex;gap:4px;background:var(--surface-2);padding:4px;border-radius:10px}
+.tabs button{border:0;background:transparent;color:var(--muted);font:500 13px var(--jp);padding:7px 14px;border-radius:7px;cursor:pointer}
+.tabs button[aria-selected="true"]{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.12)}
+button:focus-visible,input:focus-visible,select:focus-visible,label.btn:focus-within{outline:2px solid var(--flag);outline-offset:2px}
+
+.measure{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:16px;align-items:start}
+@media (max-width:900px){.measure{grid-template-columns:minmax(0,1fr)}}
+
+.viewer{display:flex;flex-direction:column;gap:10px;min-width:0}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font:500 13px var(--jp);padding:7px 12px;border-radius:8px;cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:var(--muted)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn:disabled{opacity:.45;cursor:default}
+.btn input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-left:auto}
+.seg button{border:0;background:var(--surface);color:var(--muted);font:600 12px var(--mono);padding:7px 10px;cursor:pointer}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
+
+.stage{background:var(--stage);border-radius:10px;display:flex;justify-content:center;align-items:center;overflow:hidden;position:relative;min-height:200px}
+.stage canvas{display:block;touch-action:none;cursor:crosshair;max-width:100%}
+.cue{display:flex;gap:10px;align-items:baseline;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:13px}
+.cue b{font-weight:700;white-space:nowrap}
+.cue .dot{width:10px;height:10px;border-radius:50%;flex:none;align-self:center}
+.scrub{display:grid;grid-template-columns:auto auto 1fr auto auto;gap:6px;align-items:center}
+.scrub .btn{padding:6px 9px;font-family:var(--mono)}
+.scrub input[type=range]{width:100%;accent-color:var(--accent)}
+.readout{display:flex;flex-wrap:wrap;gap:6px 16px;font:500 12px var(--mono);color:var(--muted);font-variant-numeric:tabular-nums}
+.readout b{color:var(--ink);font-weight:600}
+.settings{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px}
+@media (max-width:560px){.settings{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
+.field{display:flex;flex-direction:column;gap:3px;min-width:0}
+.field label{font-size:11px;color:var(--muted);letter-spacing:.04em}
+.field input,.field select{font:500 14px var(--mono);color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 8px;width:100%}
+.field small{font-size:11px;color:var(--muted);line-height:1.4}
+.msg{margin:0;font-size:13px;color:var(--muted);min-height:1.6em}
+.msg.err{color:var(--bad)}
+
+.side{display:flex;flex-direction:column;gap:14px;min-width:0}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px}
+.panel h2{margin:0 0 10px;font-size:12px;font-weight:700;letter-spacing:.08em;color:var(--muted)}
+.panel-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px}
+.panel-head h2{margin:0}
+.panel-head select{font:500 12px var(--jp);background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:4px 6px}
+.big{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.tile{background:var(--bg);border-radius:8px;padding:10px 10px 8px;min-width:0}
+.tile .k{font-size:11px;color:var(--muted);white-space:nowrap}
+.tile .v{font:600 26px/1.15 var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-.02em;margin-top:2px}
+.tile .v small{font-size:12px;font-weight:500;color:var(--muted);margin-left:2px;letter-spacing:0}
+.tile .s{font-size:11px;color:var(--muted);font-family:var(--mono);min-height:1.4em}
+.tile .v.none{color:var(--line)}
+.chip{display:inline-block;font:600 10px var(--jp);padding:1px 6px;border-radius:99px;border:1px solid currentColor;margin-top:4px}
+.chip.good{color:var(--good)}.chip.warn{color:var(--warn)}.chip.bad{color:var(--bad)}
+.rows{display:flex;flex-direction:column;margin-top:10px}
+.row{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:7px 0;border-top:1px solid var(--line)}
+.row .k{color:var(--muted);font-size:13px}
+.row .v{font:600 15px var(--mono);font-variant-numeric:tabular-nums;text-align:right}
+.row .v small{font-weight:500;color:var(--muted);font-size:11px}
+.row .v.none{color:var(--muted);font:400 12px var(--jp)}
+
+.steps{display:flex;flex-direction:column;gap:2px}
+.group{font-size:11px;font-weight:700;letter-spacing:.08em;color:var(--muted);margin:10px 0 4px}
+.group:first-child{margin-top:0}
+.step{display:grid;grid-template-columns:12px 1fr auto;gap:8px;align-items:center;padding:6px 8px;border-radius:7px;cursor:pointer;border:1px solid transparent}
+.step:hover{background:var(--bg)}
+.step.active{border-color:var(--flag);background:var(--bg)}
+.step .dot{width:10px;height:10px;border-radius:50%;border:2px solid currentColor}
+.step.done .dot{background:currentColor}
+.step .lbl{font-size:13px;line-height:1.35}
+.step .meta{font:500 11px var(--mono);color:var(--muted);display:flex;gap:6px;align-items:center}
+.step .x{border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:14px;padding:0 2px;line-height:1}
+.step .rec{font:500 11px var(--jp);border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:5px;padding:2px 7px;cursor:pointer}
+.save{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.save .note{font-size:11px;color:var(--muted);flex-basis:100%}
+
+.doc{max-width:860px;display:flex;flex-direction:column;gap:18px}
+.doc h2{font-size:18px;margin:0 0 6px;text-wrap:balance}
+.doc p{margin:0;max-width:68ch}
+.doc ul,.doc ol{margin:6px 0 0;padding-left:1.3em;max-width:68ch}
+.doc li+li{margin-top:4px}
+.tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+th{font-size:11px;letter-spacing:.06em;color:var(--muted);font-weight:700;background:var(--surface-2);white-space:nowrap}
+td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
+td.mark{font-weight:700;white-space:nowrap}
+.m-ok{color:var(--good)}.m-mid{color:var(--warn)}.m-ng{color:var(--bad)}
+.callout{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--flag);border-radius:8px;padding:12px 14px}
+.empty{color:var(--muted);padding:20px;text-align:center}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <header>
+    <div class="brand">
+      <h1>ヘッドスピード計測ラボ</h1>
+      <p>スマホのスロー動画から、ヘッドスピード・ボール初速・ミート率を測る試作版</p>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button role="tab" id="tb-measure" data-tab="measure" aria-selected="true">測定</button>
+      <button role="tab" id="tb-guide" data-tab="guide" aria-selected="false">測れる指標と精度</button>
+      <button role="tab" id="tb-history" data-tab="history" aria-selected="false">履歴</button>
+    </nav>
+  </header>
+
+  <section id="tab-measure" class="measure">
+    <div class="viewer">
+      <div class="toolbar">
+        <label class="btn primary" id="lbl-file">動画を読み込む<input type="file" id="file" accept="video/*"></label>
+        <button class="btn" id="btn-sample">サンプルを表示</button>
+        <button class="btn" id="btn-impact">インパクト音で頭出し</button>
+        <div class="seg" role="group" aria-label="拡大">
+          <button data-z="1" aria-pressed="true">1×</button><button data-z="2" aria-pressed="false">2×</button><button data-z="4" aria-pressed="false">4×</button>
+        </div>
+      </div>
+      <div class="cue" id="cue"></div>
+      <div class="stage" id="stage"><canvas id="cv" width="1280" height="720" aria-label="動画フレーム。タップで印をつけます"></canvas></div>
+      <div class="scrub">
+        <button class="btn" id="b-5" title="5コマ戻る">«</button>
+        <button class="btn" id="b-1" title="1コマ戻る">‹</button>
+        <input type="range" id="slider" min="0" max="100" step="1" value="0" aria-label="コマ位置">
+        <button class="btn" id="f-1" title="1コマ進む">›</button>
+        <button class="btn" id="f-5" title="5コマ進む">»</button>
+      </div>
+      <div class="readout" id="readout"></div>
+      <div class="settings">
+        <div class="field"><label for="cap">撮影fps</label><input id="cap" type="number" min="30" max="1920" step="1" value="240"><small>スロー撮影の設定値</small></div>
+        <div class="field"><label for="ffps">ファイルのfps</label><input id="ffps" type="number" min="1" max="1920" step="1" value="240"><small>普通再生でもスローに見える動画は30</small></div>
+        <div class="field"><label for="ref">物差しの長さ (mm)</label><input id="ref" type="number" min="1" step="0.01" value="42.67"><small>ゴルフボール直径 42.67mm</small></div>
+      </div>
+      <p class="msg" id="msg"></p>
+    </div>
+
+    <aside class="side">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>計測結果</h2>
+          <select id="club" aria-label="クラブ">
+            <option value="1W">ドライバー</option><option value="FW">フェアウェイウッド</option><option value="UT">ユーティリティ</option><option value="7I">7番アイアン</option><option value="W">ウェッジ</option>
+          </select>
+        </div>
+        <div class="big" id="big"></div>
+        <div class="rows" id="rows"></div>
+      </div>
+      <div class="panel">
+        <h2>印をつける手順</h2>
+        <div class="steps" id="steps"></div>
+      </div>
+      <div class="panel save">
+        <button class="btn primary" id="btn-save">この結果を履歴に保存</button>
+        <button class="btn" id="btn-clear">印をすべて消す</button>
+        <span class="note" id="save-note">履歴はこのブラウザにだけ保存されます。</span>
+      </div>
+    </aside>
+  </section>
+
+  <section id="tab-guide" class="doc" hidden>
+    <div>
+      <h2>スマホで測れるもの、測れないもの</h2>
+      <p>カメラのスロー動画（240fps以上）で、ヘッドとボールの位置をコマごとに追えば、主要な指標のうち半分ほどは実用的な精度で出せます。スピン量やフェースの向きは専用の弾道測定器が必要です。</p>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>指標</th><th>スマホ動画</th><th>精度の目安</th><th>どう測るか・必要なもの</th></tr></thead>
+      <tbody>
+        <tr><td>ヘッドスピード</td><td class="mark m-ok">◯</td><td class="num">±3〜6%</td><td>ボール直径を物差しに、インパクト直前2〜3コマのヘッド移動距離から計算。30/60fpsでは不可。</td></tr>
+        <tr><td>ボール初速</td><td class="mark m-ok">◯</td><td class="num">±3〜6%</td><td>インパクト後1〜3コマのボール移動距離から計算。ボールが画面外に出ないよう引きで撮る。</td></tr>
+        <tr><td>ミート率</td><td class="mark m-ok">◎</td><td class="num">±0.03</td><td>初速 ÷ ヘッドスピード。物差しとfpsの誤差が打ち消し合うため、スマホで一番信頼できる指標。</td></tr>
+        <tr><td>打ち出し角（上下）</td><td class="mark m-ok">◯</td><td class="num">±1〜2°</td><td>飛球線と直角（正面）から撮影した場合。</td></tr>
+        <tr><td>入射角</td><td class="mark m-mid">△</td><td class="num">±2〜3°</td><td>インパクト直前のヘッドの進行方向。2つの印を結んだ線は円弧の弦なので、クラブ別のスイング半径（ドライバー1.6m など）を仮定して補正しています。</td></tr>
+        <tr><td>スイングテンポ</td><td class="mark m-ok">◎</td><td class="num">±1コマ</td><td>始動→トップ→インパクトの時間比。3:1前後がよく目安にされる。</td></tr>
+        <tr><td>推定キャリー</td><td class="mark m-mid">△</td><td class="num">±10%以上</td><td>「初速(m/s)×4＝ヤード」の経験則（ドライバー）。スピン量が分からないので参考値。</td></tr>
+        <tr><td>左右の打ち出し方向・クラブ軌道</td><td class="mark m-mid">△</td><td class="num">目安</td><td>後方から撮った2本目の動画で線を引いて確認。数値化は難しい。</td></tr>
+        <tr><td>打点（フェースのどこに当たったか）</td><td class="mark m-mid">△</td><td class="num">—</td><td>動画より、フェースに貼るインパクトシールやスプレーが手軽で確実。</td></tr>
+        <tr><td>フェース角・ダイナミックロフト</td><td class="mark m-ng">×</td><td class="num">—</td><td>カメラ式の弾道測定器が必要。</td></tr>
+        <tr><td>スピン量・スピン軸</td><td class="mark m-ng">×</td><td class="num">—</td><td>ドップラーレーダー式かカメラ式の弾道測定器が必要。</td></tr>
+      </tbody>
+    </table></div>
+
+    <div>
+      <h2>マイク（インパクト音）の役割</h2>
+      <p>音からスピードそのものは測れません。使い道はインパクトの瞬間を特定することです。この試作では動画の音声トラックからいちばん大きな打球音を探し、そのコマへ移動します。音声は映像より数コマずれることがあるので、最後は前後のコマを見て合わせてください。本番のアプリでは、打球音をきっかけに直前数秒を自動で切り出す使い方もできます。</p>
+    </div>
+
+    <div>
+      <h2>撮影のコツ</h2>
+      <ul>
+        <li>スロー撮影を240fps以上に設定する。960fps対応機種なら精度がさらに上がる。</li>
+        <li>三脚で固定し、飛球線と直角（正面）、ボールから2〜3m、ボールと同じ高さに置く。</li>
+        <li>ボールの前後1mほどが画面に入るよう引いて撮る。ズームは使わない。</li>
+        <li>明るい屋外で撮る。暗いとシャッターが遅くなり、ヘッドが大きくブレる。</li>
+        <li>保存形式は機種や共有方法で変わります。普通に再生してもボールがゆっくり飛ぶ動画は、30fpsの再生ファイルとして保存されているので「ファイルのfps」を30にしてください。</li>
+      </ul>
+    </div>
+
+    <div class="callout">
+      <h2>本格的なアプリにするなら</h2>
+      <ol>
+        <li><b>自動追跡</b>：ボールは形と色で自動検出しやすい。ヘッドは機械学習の物体検出が必要。</li>
+        <li><b>撮影部分はネイティブアプリ</b>：ブラウザからは多くの端末で高fps撮影を指定できないため、240fps撮影とマイクでの自動録画はiOS/Androidアプリで行い、解析画面は共通化するのが現実的。</li>
+        <li><b>弾道測定器との連携</b>：スピン量や左右方向まで欲しい場合。連携できるかはメーカーのSDK/APIの公開状況次第。</li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="tab-history" class="doc" hidden>
+    <div class="panel-head" style="margin:0">
+      <h2 style="margin:0">保存した計測</h2>
+      <button class="btn" id="btn-csv">CSVをコピー</button>
+    </div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>日時</th><th>クラブ</th><th>HS m/s</th><th>初速 m/s</th><th>ミート率</th><th>打ち出し</th><th>入射角</th><th>テンポ</th><th></th></tr></thead>
+      <tbody id="hist"></tbody>
+    </table></div>
+    <textarea id="csvbox" readonly hidden style="width:100%;min-height:120px;font:12px var(--mono);background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px"></textarea>
+  </section>
+</div>
+
+<script>
+(() => {
+const $ = s => document.querySelector(s);
+const store = {
+  get(k, d){ try{ const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; }catch(e){ return d; } },
+  set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
+};
+
+const COL = { s:'#FFD23F', h:'#FF5A36', b:'#35C2FF', t:'#B9F18C' };
+const STEPS = [
+  {id:'s1', g:'s', group:'物差し（ボール直径）', label:'ボールの左端', hint:'アドレス時のボールの左端をタップ。拡大すると正確です。'},
+  {id:'s2', g:'s', label:'ボールの右端', hint:'同じボールの右端をタップ。'},
+  {id:'h1', g:'h', group:'ヘッド', label:'インパクト2〜3コマ前', hint:'インパクト2〜3コマ前へ戻り、フェースの先端（ボール側の端）をタップ。'},
+  {id:'h2', g:'h', label:'インパクト直前', hint:'ボールに当たる直前のコマで、同じくフェースの先端をタップ。'},
+  {id:'b1', g:'b', group:'ボール', label:'インパクト後1コマ目', hint:'ボールが動き出した最初のコマで、ボールの中心をタップ。'},
+  {id:'b2', g:'b', label:'その1〜2コマ後', hint:'さらに1〜2コマ進め、ボールの中心をタップ。'},
+  {id:'t0', g:'t', group:'テンポ（時刻のみ）', label:'始動', time:true, hint:'クラブが動き出したコマで「記録」を押す。'},
+  {id:'t1', g:'t', label:'トップ', time:true, hint:'切り返しのコマで「記録」を押す。'},
+  {id:'t2', g:'t', label:'インパクト', time:true, hint:'インパクトのコマで「記録」を押す。'}
+];
+const CLUBS = {
+  '1W':{name:'ドライバー', R:1.6, lo:1.44, hi:1.50, max:1.52, carry:true},
+  'FW':{name:'フェアウェイウッド', R:1.55, lo:1.40, hi:1.47, max:1.50, carry:false},
+  'UT':{name:'ユーティリティ', R:1.5, lo:1.37, hi:1.44, max:1.48, carry:false},
+  '7I':{name:'7番アイアン', R:1.4, lo:1.33, hi:1.38, max:1.43, carry:false},
+  'W':{name:'ウェッジ', R:1.3, lo:1.15, hi:1.25, max:1.32, carry:false}
+};
+
+/* ---------- synthetic sample swing (240fps, 1px = 1.2mm) ---------- */
+const SAMPLE = (() => {
+  const W=1280, H=720, MM=1.2, FPS=240, T_IMP=1.15, groundY=610;
+  const ballR = 42.67/2/MM, bx=500, by=groundY-ballR;
+  const R = 1600/MM, om = 43/1.6;
+  const thI = -2.5*Math.PI/180, Tds=0.27, Tbs=0.81;
+  const thTop = thI - om*Tds/2;
+  const ix = bx-ballR, iy = by;
+  const Cx = ix - R*Math.sin(thI), Cy = iy - R*Math.cos(thI);
+  const bv = 62.5*1000/MM, la = 12.5*Math.PI/180;
+  const theta = tau => {
+    const t0 = -Tds-Tbs;
+    if (tau <= t0) return thI;
+    if (tau <= -Tds){ const s=(tau-t0)/Tbs; return thI+(thTop-thI)*(0.5-0.5*Math.cos(Math.PI*s)); }
+    if (tau <= 0){ const u=tau+Tds; return thTop+om*u*u/(2*Tds); }
+    return thI+om*tau;
+  };
+  const head = tau => { const t=theta(tau); return {x:Cx+R*Math.sin(t), y:Cy+R*Math.cos(t), t}; };
+  const ball = tau => tau<=0 ? {x:bx,y:by} : {x:bx+bv*tau*Math.cos(la), y:by-bv*tau*Math.sin(la)};
+  function draw(ctx, t){
+    const tau = t - T_IMP;
+    const sky = ctx.createLinearGradient(0,0,0,groundY);
+    sky.addColorStop(0,'#9EC3D9'); sky.addColorStop(1,'#D8E6E4');
+    ctx.fillStyle = sky; ctx.fillRect(0,0,W,groundY);
+    ctx.fillStyle = '#6E8F6A';
+    ctx.beginPath(); ctx.moveTo(0,470);
+    for (let x=0;x<=W;x+=40) ctx.lineTo(x, 470 - 26*Math.sin(x/170) - 14*Math.sin(x/53));
+    ctx.lineTo(W,groundY); ctx.lineTo(0,groundY); ctx.fill();
+    ctx.fillStyle = '#4E7D45'; ctx.fillRect(0,groundY,W,H-groundY);
+    ctx.fillStyle = '#5B8C50'; for (let x=0;x<W;x+=64) ctx.fillRect(x,groundY,32,H-groundY);
+    ctx.fillStyle = 'rgba(255,255,255,.55)'; ctx.fillRect(0,groundY,W,2);
+    // tee
+    ctx.fillStyle = '#E9E2D0'; ctx.fillRect(bx-3, by+ballR-2, 6, 14);
+    // ball with blur
+    const drawBall = (a) => {
+      for (let i=4;i>=0;i--){
+        const p = ball(tau - 0.0015*i/4);
+        ctx.globalAlpha = i===0 ? 1 : 0.18;
+        ctx.fillStyle = '#FAFAF7'; ctx.beginPath(); ctx.arc(p.x,p.y,ballR,0,Math.PI*2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      const p = ball(tau); ctx.strokeStyle='rgba(0,0,0,.25)'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.arc(p.x,p.y,ballR,0,Math.PI*2); ctx.stroke();
+    };
+    // club with blur
+    for (let i=5;i>=0;i--){
+      const p = head(tau - 0.0018*i/5);
+      const ux = (Cx-p.x)/R, uy = (Cy-p.y)/R;
+      ctx.globalAlpha = i===0 ? 1 : 0.14;
+      ctx.strokeStyle = '#2B2F33'; ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.moveTo(p.x+ux*30, p.y+uy*30); ctx.lineTo(p.x+ux*640, p.y+uy*640); ctx.stroke();
+      ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(-p.t);
+      ctx.fillStyle = '#1E2226'; ctx.beginPath();
+      ctx.roundRect ? ctx.roundRect(-96,-44,96,44,[18,4,6,14]) : ctx.rect(-96,-44,96,44);
+      ctx.fill(); ctx.fillStyle = '#9AA3AA'; ctx.fillRect(-6,-42,6,40);
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+    drawBall();
+    ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillRect(14,14,300,30);
+    ctx.fillStyle = '#fff'; ctx.font = '500 15px "Zen Kaku Gothic New", sans-serif';
+    ctx.fillText('サンプル映像（合成・240fps・正面）', 24, 35);
+  }
+  const k = tau => Math.round((tau+T_IMP)*FPS);
+  const at = (tau, p, dx=0, dy=0) => ({t:k(tau)/FPS, x:p.x+dx, y:p.y+dy});
+  const marks = {
+    s1: at(-0.5, {x:bx-ballR, y:by}, 0.2, 0),
+    s2: at(-0.5, {x:bx+ballR, y:by}, -0.1, 1),
+    h1: at(-2/240, head(-2/240), 1, -1),
+    h2: at(-1/240, head(-1/240), -1, 0),
+    b1: at(1/240, ball(1/240), 1, 1),
+    b2: at(3/240, ball(3/240), -1, 0),
+    t0: {t:k(-1.08)/FPS}, t1: {t:k(-0.27)/FPS}, t2: {t:k(0)/FPS}
+  };
+  return {W, H, FPS, duration:(T_IMP+0.09), draw, marks, impactT:T_IMP};
+})();
+
+/* ---------- state ---------- */
+const S = { src:null, isSample:true, cap:240, ffps:240, ref:42.67, k:0, maxK:0, marks:{}, active:'s1', zoom:1, cx:0, cy:0 };
+const cv = $('#cv'), ctx = cv.getContext('2d');
+const video = document.createElement('video');
+video.muted = true; video.playsInline = true; video.setAttribute('playsinline',''); video.preload = 'auto';
+let curFile = null, seeking = false, pendingT = null;
+
+const tOf = k => k / S.ffps;
+const kOf = t => Math.round(t * S.ffps);
+function msg(text, err){ const m=$('#msg'); m.textContent = text || ''; m.classList.toggle('err', !!err); }
+
+function setupCanvas(){
+  cv.width = S.src.W; cv.height = S.src.H;
+  S.zoom = 1; S.cx = S.src.W/2; S.cy = S.src.H/2;
+  document.querySelectorAll('.seg button').forEach(b => b.setAttribute('aria-pressed', b.dataset.z==='1'));
+  fitCanvas();
+}
+function fitCanvas(){
+  if (!S.src) return;
+  const wrap = $('#stage'), maxW = wrap.clientWidth, maxH = Math.max(240, window.innerHeight*0.6);
+  const sc = Math.min(maxW/S.src.W, maxH/S.src.H);
+  cv.style.width = Math.round(S.src.W*sc)+'px'; cv.style.height = Math.round(S.src.H*sc)+'px';
+}
+window.addEventListener('resize', fitCanvas);
+
+function loadSample(){
+  S.isSample = true; curFile = null;
+  S.src = {W:SAMPLE.W, H:SAMPLE.H, draw:c => SAMPLE.draw(c, tOf(S.k))};
+  S.cap = S.ffps = SAMPLE.FPS; S.ref = 42.67;
+  $('#cap').value = S.cap; $('#ffps').value = S.ffps; $('#ref').value = S.ref;
+  S.maxK = Math.floor(SAMPLE.duration*S.ffps);
+  S.marks = JSON.parse(JSON.stringify(SAMPLE.marks));
+  S.active = 's1';
+  setupCanvas(); updateSlider();
+  goto(kOf(SAMPLE.marks.h2.t));
+  msg('合成したサンプルのスイングに印をつけた状態です。印を動かしたり、ご自分の動画を読み込んで試せます。');
+  refresh();
+}
+
+function loadVideo(f){
+  curFile = f;
+  if (video.src) URL.revokeObjectURL(video.src);
+  msg('動画を読み込んでいます…');
+  video.onloadedmetadata = () => {
+    S.isSample = false;
+    S.src = {W:video.videoWidth, H:video.videoHeight, draw:c => c.drawImage(video,0,0)};
+    S.marks = {}; S.active = 's1';
+    S.maxK = Math.max(0, Math.floor(video.duration*S.ffps)-1);
+    setupCanvas(); updateSlider();
+    const p = video.play(); if (p && p.then) p.then(()=>{ video.pause(); goto(0); }).catch(()=>goto(0)); else goto(0);
+    msg('読み込みました。まず「インパクト音で頭出し」を押すか、スライダーでインパクト付近を探してください。');
+    refresh();
+  };
+  video.onerror = () => msg('この動画は再生できませんでした。MP4かMOV（H.264）で保存し直すと読み込めることがあります。', true);
+  video.src = URL.createObjectURL(f);
+  video.load();
+}
+video.addEventListener('seeked', () => {
+  seeking = false;
+  if (pendingT !== null){ const t = pendingT; pendingT = null; seekVideo(t); return; }
+  render();
+});
+function seekVideo(t){ if (seeking){ pendingT = t; return; } seeking = true; video.currentTime = t; }
+
+function goto(k){
+  S.k = Math.max(0, Math.min(S.maxK, Math.round(k)));
+  $('#slider').value = S.k;
+  if (S.isSample) render(); else seekVideo(tOf(S.k) + 0.3/S.ffps);
+  updateReadout();
+}
+function updateSlider(){ const s=$('#slider'); s.max = S.maxK; s.value = S.k; }
+
+/* ---------- rendering ---------- */
+function render(){
+  if (!S.src) return;
+  const {W,H} = S.src, z = S.zoom;
+  ctx.setTransform(1,0,0,1,0,0); ctx.fillStyle = '#000'; ctx.fillRect(0,0,W,H);
+  ctx.setTransform(z,0,0,z, W/2 - S.cx*z, H/2 - S.cy*z);
+  try { S.src.draw(ctx); } catch(e) {}
+  const u = Math.max(W,H)/1280/z;
+  const line = (a,b,col) => {
+    const A=S.marks[a], B=S.marks[b]; if (!A||!B||A.x==null||B.x==null) return;
+    ctx.strokeStyle = col; ctx.lineWidth = 2*u; ctx.setLineDash([6*u,4*u]);
+    ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y); ctx.stroke(); ctx.setLineDash([]);
+  };
+  line('s1','s2',COL.s); line('h1','h2',COL.h); line('b1','b2',COL.b);
+  for (const st of STEPS){
+    const m = S.marks[st.id]; if (!m || m.x==null) continue;
+    const here = kOf(m.t) === S.k, col = COL[st.g];
+    ctx.globalAlpha = here ? 1 : 0.5;
+    ctx.strokeStyle = col; ctx.lineWidth = 2*u;
+    ctx.beginPath(); ctx.arc(m.x,m.y,9*u,0,Math.PI*2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(m.x-15*u,m.y); ctx.lineTo(m.x-4*u,m.y); ctx.moveTo(m.x+4*u,m.y); ctx.lineTo(m.x+15*u,m.y);
+    ctx.moveTo(m.x,m.y-15*u); ctx.lineTo(m.x,m.y-4*u); ctx.moveTo(m.x,m.y+4*u); ctx.lineTo(m.x,m.y+15*u); ctx.stroke();
+    ctx.font = `600 ${13*u}px "IBM Plex Mono", monospace`;
+    ctx.lineWidth = 3*u; ctx.strokeStyle = 'rgba(0,0,0,.7)'; ctx.strokeText(st.id.toUpperCase(), m.x+12*u, m.y-12*u);
+    ctx.fillStyle = col; ctx.fillText(st.id.toUpperCase(), m.x+12*u, m.y-12*u);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function updateReadout(){
+  const t2 = S.marks.t2;
+  const rel = t2 ? ((S.k - kOf(t2.t)) / S.cap * 1000) : null;
+  $('#readout').innerHTML =
+    `<span>コマ <b>${S.k}</b> / ${S.maxK}</span>` +
+    `<span>実時間 <b>${(S.k/S.cap).toFixed(4)}</b> s</span>` +
+    (rel !== null ? `<span>インパクトから <b>${rel>0?'+':''}${rel.toFixed(1)}</b> ms</span>` : '') +
+    `<span>1コマ = ${(1000/S.cap).toFixed(2)} ms</span>`;
+}
+
+/* ---------- measurements ---------- */
+const dist = (a,b) => Math.hypot(a.x-b.x, a.y-b.y);
+function compute(){
+  const m = S.marks, r = {};
+  const sc = (m.s1 && m.s2 && m.s1.x!=null && m.s2.x!=null) ? dist(m.s1,m.s2) : 0;
+  r.scalePx = sc; r.mmPerPx = sc > 2 ? S.ref / sc : null;
+  const seg = (a,b) => {
+    if (!a || !b || a.x==null || b.x==null) return null;
+    const dk = Math.abs(kOf(b.t) - kOf(a.t));
+    if (dk === 0) return {err:'2つの印が同じコマにあります'};
+    const dt = dk / S.cap, px = dist(a,b);
+    const [p,q] = kOf(a.t) < kOf(b.t) ? [a,b] : [b,a];
+    return {dk, dt, px, pxs:px/dt, ang: Math.atan2(-(q.y-p.y), Math.abs(q.x-p.x))*180/Math.PI};
+  };
+  r.head = seg(m.h1,m.h2); r.ball = seg(m.b1,m.b2);
+  const okH = r.head && !r.head.err, okB = r.ball && !r.ball.err;
+  const e = 1.5 * Math.SQRT2;
+  if (okH && r.mmPerPx){ r.hs = r.head.pxs*r.mmPerPx/1000; r.hsErr = Math.hypot(e/sc, e/r.head.px); }
+  if (okB && r.mmPerPx){ r.bs = r.ball.pxs*r.mmPerPx/1000; r.bsErr = Math.hypot(e/sc, e/r.ball.px); }
+  if (okH && okB){ r.smash = r.ball.pxs / r.head.pxs; r.smErr = r.smash*Math.hypot(e/r.head.px, e/r.ball.px); }
+  if (okB) r.launch = r.ball.ang;
+  if (okH){
+    // 2つの印を結ぶ線は円弧の弦なので、インパクト時の接線方向までの回転分を補正する（スイング半径はクラブ別の想定値）
+    const club = CLUBS[$('#club').value];
+    const tMid = (kOf(m.h1.t) + kOf(m.h2.t)) / 2 / S.cap;
+    const tImp = (m.t2 ? kOf(m.t2.t) : Math.max(kOf(m.h1.t), kOf(m.h2.t)) + 1) / S.cap;
+    const v = r.hs != null ? r.hs : 40;
+    r.attack = r.head.ang + (v / club.R) * (tImp - tMid) * 180 / Math.PI;
+  }
+  if (m.t0 && m.t1 && m.t2){
+    const bsw = (kOf(m.t1.t)-kOf(m.t0.t))/S.cap, dsw = (kOf(m.t2.t)-kOf(m.t1.t))/S.cap;
+    if (bsw > 0 && dsw > 0) r.tempo = {bsw, dsw, ratio:bsw/dsw};
+  }
+  return r;
+}
+
+function refresh(){ renderResults(); renderSteps(); renderCue(); render(); updateReadout(); }
+
+function renderResults(){
+  const r = compute(), club = CLUBS[$('#club').value];
+  const tile = (k, v, unit, sub, chip) => `<div class="tile"><div class="k">${k}</div><div class="v${v==null?' none':''}">${v==null?'—':v}${v!=null&&unit?`<small>${unit}</small>`:''}</div><div class="s">${sub||''}</div>${chip||''}</div>`;
+  let smChip = '';
+  if (r.smash != null){
+    if (r.smash > club.max) smChip = '<span class="chip bad">上限超え・印を確認</span>';
+    else if (r.smash >= club.lo) smChip = '<span class="chip good">芯に当たっている</span>';
+    else if (r.smash >= club.lo - 0.06) smChip = '<span class="chip warn">もう少し</span>';
+    else smChip = '<span class="chip bad">芯を外している</span>';
+  }
+  const pct = x => x != null ? `±${(x*100).toFixed(1)}%` : '';
+  const why = (need) => `<span style="font-family:var(--jp)">${need}が必要</span>`;
+  $('#big').innerHTML =
+    tile('ヘッドスピード', r.hs!=null ? r.hs.toFixed(1) : null, 'm/s',
+      r.hs!=null ? `${(r.hs*2.237).toFixed(1)} mph ${pct(r.hsErr)}` : (r.head&&r.head.err ? r.head.err : why('物差し＋ヘッド'))) +
+    tile('ボール初速', r.bs!=null ? r.bs.toFixed(1) : null, 'm/s',
+      r.bs!=null ? `${(r.bs*2.237).toFixed(1)} mph ${pct(r.bsErr)}` : (r.ball&&r.ball.err ? r.ball.err : why('物差し＋ボール'))) +
+    tile('ミート率', r.smash!=null ? r.smash.toFixed(2) : null, '',
+      r.smash!=null ? `±${r.smErr.toFixed(2)} 目安${club.lo.toFixed(2)}〜${club.hi.toFixed(2)}` : why('ヘッド＋ボール'), smChip);
+  const row = (k, v, none) => `<div class="row"><span class="k">${k}</span><span class="v${v==null?' none':''}">${v==null?none:v}</span></div>`;
+  const deg = x => `${x>0?'+':''}${x.toFixed(1)}<small>°</small>`;
+  const carry = r.bs!=null ? (club.carry ? `${Math.round(r.bs*4)}<small> yd</small> <small>(${Math.round(r.bs*4*0.9144)} m)</small>` : '<small>ドライバーのみ</small>') : null;
+  $('#rows').innerHTML =
+    row('打ち出し角（上下）', r.launch!=null ? deg(r.launch) : null, 'ボールの印2つ') +
+    row('入射角', r.attack!=null ? `${deg(r.attack)} <small>${r.attack<-0.5?'ダウンブロー':r.attack>0.5?'アッパー':'レベル'}</small>` : null, 'ヘッドの印2つ') +
+    row('推定キャリー', carry, '初速が必要') +
+    row('テンポ', r.tempo ? `${r.tempo.ratio.toFixed(1)} : 1 <small>${r.tempo.bsw.toFixed(2)}s / ${r.tempo.dsw.toFixed(2)}s</small>` : null, '始動・トップ・インパクト');
+  S.last = r;
+}
+
+function renderSteps(){
+  let html = '';
+  for (const st of STEPS){
+    if (st.group) html += `<div class="group">${st.group}</div>`;
+    const m = S.marks[st.id], done = !!m;
+    const meta = done ? `コマ ${kOf(m.t)}` : (st.time ? '' : '未');
+    html += `<div class="step${done?' done':''}${S.active===st.id?' active':''}" data-id="${st.id}" style="color:${COL[st.g]}" role="button" tabindex="0">
+      <span class="dot"></span>
+      <span class="lbl" style="color:var(--ink)">${st.label}</span>
+      <span class="meta">${meta}${st.time ? `<button class="rec" data-rec="${st.id}">記録</button>` : ''}${done ? `<button class="x" data-clear="${st.id}" aria-label="${st.label}の印を消す">×</button>` : ''}</span>
+    </div>`;
+  }
+  $('#steps').innerHTML = html;
+}
+
+function renderCue(){
+  const st = STEPS.find(s => s.id === S.active);
+  $('#cue').innerHTML = st ? `<span class="dot" style="background:${COL[st.g]}"></span><b>${st.label}</b><span>${st.hint}</span>` : '';
+}
+
+function nextStep(from){
+  const i = STEPS.findIndex(s => s.id === from);
+  for (let j=i+1;j<STEPS.length;j++) if (!S.marks[STEPS[j].id]) return STEPS[j].id;
+  return from;
+}
+
+$('#steps').addEventListener('click', e => {
+  const clr = e.target.closest('[data-clear]'), rec = e.target.closest('[data-rec]'), row = e.target.closest('.step');
+  if (clr){ delete S.marks[clr.dataset.clear]; S.active = clr.dataset.clear; refresh(); return; }
+  if (rec){ S.marks[rec.dataset.rec] = {t:tOf(S.k)}; S.active = nextStep(rec.dataset.rec); refresh(); return; }
+  if (row){
+    S.active = row.dataset.id;
+    const m = S.marks[row.dataset.id];
+    if (m) goto(kOf(m.t));
+    refresh();
+  }
+});
+$('#steps').addEventListener('keydown', e => { if ((e.key==='Enter'||e.key===' ') && e.target.classList.contains('step')){ e.preventDefault(); e.target.click(); } });
+
+/* ---------- pointer: tap to mark, drag to pan ---------- */
+let down = null;
+function toSrc(ev){
+  const rc = cv.getBoundingClientRect();
+  const px = (ev.clientX-rc.left)*cv.width/rc.width, py = (ev.clientY-rc.top)*cv.height/rc.height;
+  const z = S.zoom;
+  return {x:(px - (cv.width/2 - S.cx*z))/z, y:(py - (cv.height/2 - S.cy*z))/z, px, py};
+}
+function clampView(){
+  const {W,H} = S.src, z = S.zoom;
+  S.cx = Math.min(W - W/(2*z), Math.max(W/(2*z), S.cx));
+  S.cy = Math.min(H - H/(2*z), Math.max(H/(2*z), S.cy));
+}
+cv.addEventListener('pointerdown', e => { down = {x:e.clientX, y:e.clientY, cx:S.cx, cy:S.cy, moved:false}; cv.setPointerCapture(e.pointerId); });
+cv.addEventListener('pointermove', e => {
+  if (!down) return;
+  const dx = e.clientX-down.x, dy = e.clientY-down.y;
+  if (Math.hypot(dx,dy) > 6) down.moved = true;
+  if (down.moved && S.zoom > 1){
+    const rc = cv.getBoundingClientRect(), k = cv.width/rc.width/S.zoom;
+    S.cx = down.cx - dx*k; S.cy = down.cy - dy*k; clampView(); render();
+  }
+});
+cv.addEventListener('pointerup', e => {
+  if (!down) return;
+  const moved = down.moved; down = null;
+  if (moved || !S.src) return;
+  const st = STEPS.find(s => s.id === S.active);
+  if (!st){ return; }
+  if (st.time){ msg('テンポの印は、手順の「記録」ボタンで今のコマを記録します。'); return; }
+  const p = toSrc(e);
+  S.marks[st.id] = {t:tOf(S.k), x:p.x, y:p.y};
+  S.active = nextStep(st.id);
+  msg('');
+  refresh();
+});
+
+document.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => {
+  S.zoom = +b.dataset.z;
+  document.querySelectorAll('.seg button').forEach(x => x.setAttribute('aria-pressed', x===b));
+  const st = STEPS.find(s => s.id === S.active), m = S.marks[st && st.id];
+  const prev = STEPS.slice(0, STEPS.findIndex(s=>s.id===S.active)).reverse().map(s=>S.marks[s.id]).find(x=>x&&x.x!=null);
+  const focus = (m && m.x!=null) ? m : prev;
+  if (focus){ S.cx = focus.x; S.cy = focus.y; }
+  clampView(); render();
+  if (S.zoom > 1) msg('拡大中はドラッグで表示位置を動かせます。');
+}));
+
+/* ---------- controls ---------- */
+$('#slider').addEventListener('input', e => goto(+e.target.value));
+$('#b-5').onclick = () => goto(S.k-5); $('#b-1').onclick = () => goto(S.k-1);
+$('#f-1').onclick = () => goto(S.k+1); $('#f-5').onclick = () => goto(S.k+5);
+document.addEventListener('keydown', e => {
+  if (e.target.matches('input,select,textarea')) return;
+  if ($('#tab-measure').hidden) return;
+  if (e.key==='ArrowLeft'){ goto(S.k - (e.shiftKey?5:1)); e.preventDefault(); }
+  if (e.key==='ArrowRight'){ goto(S.k + (e.shiftKey?5:1)); e.preventDefault(); }
+});
+$('#file').addEventListener('change', e => { const f = e.target.files[0]; if (f) loadVideo(f); e.target.value=''; });
+$('#btn-sample').onclick = loadSample;
+$('#cap').addEventListener('change', e => { const v=+e.target.value; if (v>0){ S.cap=v; refresh(); } });
+$('#ffps').addEventListener('change', e => {
+  const v=+e.target.value; if (!(v>0)) return;
+  const t = tOf(S.k); S.ffps = v;
+  S.maxK = S.isSample ? Math.floor(SAMPLE.duration*v) : Math.max(0, Math.floor(video.duration*v)-1);
+  updateSlider(); goto(kOf(t)); refresh();
+});
+$('#ref').addEventListener('change', e => { const v=+e.target.value; if (v>0){ S.ref=v; refresh(); } });
+$('#club').addEventListener('change', refresh);
+$('#btn-clear').onclick = () => { S.marks = {}; S.active='s1'; refresh(); msg('印を消しました。'); };
+
+$('#btn-impact').onclick = async () => {
+  if (S.isSample){
+    goto(kOf(SAMPLE.impactT)); S.marks.t2 = {t:tOf(S.k)}; refresh();
+    msg('サンプルのインパクトのコマへ移動しました。'); return;
+  }
+  if (!curFile) return;
+  msg('音声を解析しています…');
+  try{
+    const buf = await curFile.arrayBuffer();
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const ac = new AC();
+    const audio = await new Promise((res, rej) => { const p = ac.decodeAudioData(buf, res, rej); if (p && p.catch) p.catch(rej); });
+    if (ac.close) ac.close();
+    const d = audio.getChannelData(0), sr = audio.sampleRate;
+    let mi = 0, mv = 0;
+    for (let i=0;i<d.length;i++){ const a = Math.abs(d[i]); if (a > mv){ mv = a; mi = i; } }
+    if (mv < 0.02) throw new Error('quiet');
+    let on = mi;
+    for (let i=Math.max(0, mi-Math.round(sr*0.03)); i<mi; i++){ if (Math.abs(d[i]) > mv*0.25){ on = i; break; } }
+    const t = on / sr;
+    goto(Math.floor(t*S.ffps)); S.marks.t2 = {t:tOf(S.k)}; refresh();
+    msg(`打球音を ${t.toFixed(3)} 秒に見つけました。音は映像と数コマずれることがあるので、前後のコマでボールが動き出す瞬間を確認してください。`);
+  }catch(err){
+    msg('この動画から音声を読み取れませんでした。スロー保存の動画は音声がないことがあります。スライダーでインパクトを探してください。', true);
+  }
+};
+
+/* ---------- history ---------- */
+const HKEY = 'hs-lab-history-v1';
+function renderHistory(){
+  const h = store.get(HKEY, []);
+  const f = (x,d) => x==null ? '—' : x.toFixed(d);
+  if (!h.length){ $('#hist').innerHTML = `<tr><td colspan="9" class="empty">まだ保存した計測はありません。測定タブの「この結果を履歴に保存」で追加できます。</td></tr>`; return; }
+  const avg = key => { const v = h.map(r=>r[key]).filter(x=>x!=null); return v.length ? v.reduce((a,b)=>a+b,0)/v.length : null; };
+  $('#hist').innerHTML = h.map((r,i) => `<tr>
+    <td class="num" style="text-align:left">${new Date(r.at).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
+    <td>${CLUBS[r.club]?.name || r.club}${r.sample?' <small style="color:var(--muted)">(サンプル)</small>':''}</td>
+    <td class="num">${f(r.hs,1)}</td><td class="num">${f(r.bs,1)}</td><td class="num">${f(r.smash,2)}</td>
+    <td class="num">${f(r.launch,1)}°</td><td class="num">${f(r.attack,1)}°</td><td class="num">${r.tempo?r.tempo.toFixed(1)+':1':'—'}</td>
+    <td><button class="x btn" data-del="${i}" aria-label="削除" style="padding:2px 8px">削除</button></td></tr>`).join('') +
+    `<tr><td colspan="2"><b>平均（${h.length}件）</b></td><td class="num"><b>${f(avg('hs'),1)}</b></td><td class="num"><b>${f(avg('bs'),1)}</b></td><td class="num"><b>${f(avg('smash'),2)}</b></td><td class="num">${f(avg('launch'),1)}°</td><td class="num">${f(avg('attack'),1)}°</td><td class="num">${avg('tempo')!=null?avg('tempo').toFixed(1)+':1':'—'}</td><td></td></tr>`;
+}
+$('#hist').addEventListener('click', e => {
+  const b = e.target.closest('[data-del]'); if (!b) return;
+  const h = store.get(HKEY, []); h.splice(+b.dataset.del, 1); store.set(HKEY, h); renderHistory();
+});
+$('#btn-save').onclick = () => {
+  const r = S.last || compute();
+  if (r.hs==null && r.smash==null && r.bs==null){ $('#save-note').textContent = 'ヘッドかボールの計測が終わってから保存してください。'; return; }
+  const h = store.get(HKEY, []);
+  h.unshift({at:Date.now(), club:$('#club').value, hs:r.hs??null, bs:r.bs??null, smash:r.smash??null, launch:r.launch??null, attack:r.attack??null, tempo:r.tempo?r.tempo.ratio:null, sample:S.isSample});
+  store.set(HKEY, h); renderHistory();
+  $('#save-note').textContent = `保存しました（${h.length}件）。履歴タブで一覧と平均を見られます。`;
+};
+$('#btn-csv').onclick = () => {
+  const h = store.get(HKEY, []);
+  const f = (x,d) => x==null ? '' : x.toFixed(d);
+  const csv = ['日時,クラブ,ヘッドスピード(m/s),ボール初速(m/s),ミート率,打ち出し角,入射角,テンポ']
+    .concat(h.map(r => [new Date(r.at).toISOString(), CLUBS[r.club]?.name||r.club, f(r.hs,1), f(r.bs,1), f(r.smash,2), f(r.launch,1), f(r.attack,1), f(r.tempo,2)].join(','))).join('\n');
+  const box = $('#csvbox');
+  const fallback = () => { box.hidden = false; box.value = csv; box.select(); $('#btn-csv').textContent = '下の枠から手動でコピー'; };
+  try{
+    navigator.clipboard.writeText(csv).then(() => { $('#btn-csv').textContent = 'コピーしました'; setTimeout(()=>$('#btn-csv').textContent='CSVをコピー', 1800); }, fallback);
+  }catch(e){ fallback(); }
+};
+
+/* ---------- tabs ---------- */
+function showTab(name){
+  document.querySelectorAll('[data-tab]').forEach(b => b.setAttribute('aria-selected', b.dataset.tab===name));
+  ['measure','guide','history'].forEach(n => $('#tab-'+n).hidden = n!==name);
+  store.set('hs-lab-tab', name);
+  if (name==='measure') { fitCanvas(); render(); }
+  if (name==='history') renderHistory();
+}
+document.querySelectorAll('[data-tab]').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
+
+loadSample();
+renderHistory();
+const hash = (location.hash||'').slice(1);
+showTab(['measure','guide','history'].includes(hash) ? hash : store.get('hs-lab-tab','measure'));
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(render);
+})();
+</script>
+</body>
+</html>
