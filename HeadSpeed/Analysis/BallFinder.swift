@@ -69,53 +69,123 @@ enum BallFinder {
     }
 
     // MARK: Rear view
-    // From behind, the ball is often backlit and darker than the mat, and it usually sits on a
-    // tee. Mirrors search_rear / refine_rear in reference/ballfinder.py.
+    // From behind, the ball sits on a tee, often in front of a split background (dark field
+    // above, bright path below) or backlit, so it is neither reliably brighter nor darker than
+    // its surroundings. Its outline is still a circle of edges: look for that instead of a blob.
+    // Mirrors search_rear / refine_rear in reference/ballfinder.py.
 
-    /// Round blob of either polarity in the guide; several opening widths cut it loose from a
-    /// tee. Picks the candidate nearest `anchor` (x, y in 0…1).
+    /// Directions on the tee's side (image y grows downward) carry no outline.
+    private static let teeSide = (50.0 * .pi / 180, 130.0 * .pi / 180)
+
+    /// Circle Hough on edge directions (either polarity) inside the guide, on a half-size
+    /// frame. Candidates must have edges all round (a square sticker or a tee fails); among
+    /// them, the one nearest `anchor` (x, y in 0…1) wins; specks near the minimum size count half.
     static func searchRear(_ img: GrayImage, guide: (Double, Double, Double, Double),
-                           minD: Double, maxD: Double, anchor: (Double, Double)) -> BallFix? {
+                           minD: Double, maxD: Double, anchor: (Double, Double),
+                           edgeMin: Double = 10) -> BallFix? {
         let W = img.width, H = img.height
         let gx0 = max(0, Int(guide.0 * Double(W))), gx1 = min(W, Int(guide.2 * Double(W)))
         let gy0 = max(0, Int(guide.1 * Double(H))), gy1 = min(H, Int(guide.3 * Double(H)))
-        guard gx1 - gx0 > 8, gy1 - gy0 > 8 else { return nil }
-        let loc = boxMean(img, radius: max(4, Int(maxD * 0.7)))
-        var best: (fix: BallFix, dist: Double)?
-        for pol in [1.0, -1.0] {
-            var raw = [Bool](repeating: false, count: W * H)
-            for y in gy0..<gy1 {
-                for x in gx0..<gx1 where pol * (Double(img.pixels[y * W + x]) - loc[y * W + x]) >= 25 {
-                    raw[y * W + x] = true
+        let gw = gx1 - gx0, gh = gy1 - gy0
+        guard gw > 8, gh > 8 else { return nil }
+        let (gx, gy) = sobel(img)
+        var mag = [Double](repeating: 0, count: W * H)
+        for i in 0..<(W * H) { mag[i] = hypot(gx[i], gy[i]) }
+
+        var ex: [Int] = [], ey: [Int] = [], nx: [Double] = [], ny: [Double] = []
+        for y in gy0..<gy1 {
+            for x in gx0..<gx1 where mag[y * W + x] >= edgeMin {
+                let m = mag[y * W + x]
+                ex.append(x); ey.append(y); nx.append(gx[y * W + x] / m); ny.append(gy[y * W + x] / m)
+            }
+        }
+        var cands: [(score: Double, x: Int, y: Int, r: Double)] = []
+        var acc = [Double](repeating: 0, count: gw * gh)
+        var a3 = [Double](repeating: 0, count: gw * gh)
+        var r = max(2.0, minD / 2)
+        while r <= maxD / 2 + 0.01 {
+            for i in 0..<acc.count { acc[i] = 0; a3[i] = 0 }
+            for k in 0..<ex.count {
+                for s in [1.0, -1.0] {
+                    let cx = Int((Double(ex[k]) + s * r * nx[k]).rounded()) - gx0
+                    let cy = Int((Double(ey[k]) + s * r * ny[k]).rounded()) - gy0
+                    if cx >= 0, cx < gw, cy >= 0, cy < gh { acc[cy * gw + cx] += 1 }
                 }
             }
-            for k in [2, 3, 5, 7] {
-                let lo = max(minD, Double(k) / 0.6), hi = min(maxD, max(Double(k) / 0.3, 6))
-                if lo > hi { continue }
-                for b in Blobs.find(mask: openH(raw, width: W, height: H, k: k), width: W, height: H) {
-                    let bw = Double(b.boxW), bh = Double(b.boxH)
-                    guard bw >= lo, bw <= hi, bh >= 0.7 * bw, bh <= 1.3 * bw, b.fill >= 0.6 else { continue }
-                    let d = (bw + bh) / 2
-                    let contrast = pol * (meanIn(img, cx: b.cx, cy: b.cy, r0: 0, r1: d * 0.3)
-                                          - meanIn(img, cx: b.cx, cy: b.cy, r0: d * 0.8, r1: d * 1.6))
-                    guard contrast >= 35 else { continue }
-                    let dist = hypot(b.cx / Double(W) - anchor.0, b.cy / Double(H) - anchor.1)
-                    if best == nil || dist < best!.dist { best = (BallFix(x: b.cx, y: b.cy, d: d), dist) }
+            // 3×3 sum: votes scatter by a pixel or so.
+            for y in 1..<(gh - 1) {
+                for x in 1..<(gw - 1) {
+                    var t = 0.0
+                    for dy in -1...1 { for dx in -1...1 { t += acc[(y + dy) * gw + x + dx] } }
+                    a3[y * gw + x] = t
                 }
             }
+            let norm = 2 * Double.pi * r
+            for y in 0..<gh {
+                for x in 0..<gw {
+                    let sc = a3[y * gw + x] / norm
+                    guard sc >= 0.6 else { continue }
+                    var isMax = true
+                    for yy in max(0, y - 1)...min(gh - 1, y + 1) {
+                        for xx in max(0, x - 1)...min(gw - 1, x + 1) where a3[yy * gw + xx] / norm > sc { isMax = false }
+                    }
+                    if isMax { cands.append((sc, x + gx0, y + gy0, r)) }
+                }
+            }
+            r += 1
+        }
+        cands.sort { $0.score > $1.score }
+        var best: (fix: BallFix, key: Double)?
+        for c in cands.prefix(60) {
+            let cov = coverage(gx, gy, mag, width: W, height: H, cx: Double(c.x), cy: Double(c.y), r: c.r, edgeMin: edgeMin)
+            guard cov >= 0.75 else { continue }
+            let dist = hypot(Double(c.x) / Double(W) - anchor.0, Double(c.y) / Double(H) - anchor.1)
+            let key = cov * min(1, c.r / minD) / (1 + 3 * dist)
+            if best == nil || key > best!.key { best = (BallFix(x: Double(c.x), y: Double(c.y), d: 2 * c.r), key) }
         }
         return best?.fix
     }
 
-    /// Sub-pixel circle from the ball's upper edge (a tee or the ground can touch the lower
-    /// half): rays from the approximate centre, threshold crossings, least-squares circle.
+    /// Share of directions (tee side skipped) with a radial edge on the circle.
+    private static func coverage(_ gx: [Double], _ gy: [Double], _ mag: [Double], width W: Int, height H: Int,
+                                 cx: Double, cy: Double, r: Double, edgeMin: Double) -> Double {
+        var hit = 0, n = 0
+        for deg in stride(from: 0.0, to: 360.0, by: 10) {
+            let a = deg * .pi / 180
+            if a >= teeSide.0 && a <= teeSide.1 { continue }
+            let ux = cos(a), uy = sin(a)
+            n += 1
+            for dr in [0.0, -1, 1, -1.5, 1.5] {
+                let x = Int((cx + ux * (r + dr)).rounded()), y = Int((cy + uy * (r + dr)).rounded())
+                guard x >= 0, x < W, y >= 0, y < H else { continue }
+                let i = y * W + x, m = mag[i]
+                if m >= edgeMin && abs(gx[i] * ux + gy[i] * uy) >= 0.93 * m { hit += 1; break }
+            }
+        }
+        return n > 0 ? Double(hit) / Double(n) : 0
+    }
+
+    /// Sobel gradients (borders clamped), scaled to grey levels per pixel.
+    private static func sobel(_ img: GrayImage) -> ([Double], [Double]) {
+        let W = img.width, H = img.height
+        var gx = [Double](repeating: 0, count: W * H), gy = [Double](repeating: 0, count: W * H)
+        func p(_ x: Int, _ y: Int) -> Double { Double(img.pixels[min(H - 1, max(0, y)) * W + min(W - 1, max(0, x))]) }
+        for y in 0..<H {
+            for x in 0..<W {
+                gx[y * W + x] = (p(x + 1, y - 1) + 2 * p(x + 1, y) + p(x + 1, y + 1)
+                                 - p(x - 1, y - 1) - 2 * p(x - 1, y) - p(x - 1, y + 1)) / 8
+                gy[y * W + x] = (p(x - 1, y + 1) + 2 * p(x, y + 1) + p(x + 1, y + 1)
+                                 - p(x - 1, y - 1) - 2 * p(x, y - 1) - p(x + 1, y - 1)) / 8
+            }
+        }
+        return (gx, gy)
+    }
+
+    /// Sub-pixel circle: on rays from the approximate centre (tee side skipped), the strongest
+    /// radial edge with a parabolic peak, then a least-squares circle with outlier rejection.
     static func refineRear(_ img: GrayImage, approx: BallFix) -> BallFix? {
         let W = img.width, H = img.height
         let d0 = approx.d
-        let inside = meanIn(img, cx: approx.x, cy: approx.y, r0: 0, r1: d0 * 0.25)
-        let ring = meanIn(img, cx: approx.x, cy: approx.y, r0: d0 * 0.9, r1: d0 * 1.4)
-        guard abs(inside - ring) >= 30 else { return nil }
-        let thr = (inside + ring) / 2, pol = inside > ring ? 1.0 : -1.0
         func at(_ x: Double, _ y: Double) -> Double? {
             let x0 = Int(x.rounded(.down)), y0 = Int(y.rounded(.down))
             guard x0 >= 0, y0 >= 0, x0 + 1 < W, y0 + 1 < H else { return nil }
@@ -124,87 +194,64 @@ enum BallFinder {
             return (1 - fx) * (1 - fy) * p(x0, y0) + fx * (1 - fy) * p(x0 + 1, y0)
                 + (1 - fx) * fy * p(x0, y0 + 1) + fx * fy * p(x0 + 1, y0 + 1)
         }
+        var rs: [Double] = []
+        var rr0 = 0.2 * d0
+        while rr0 < 0.85 * d0 { rs.append(rr0); rr0 += 0.5 }
+        guard rs.count >= 3 else { return nil }
         var pts: [(Double, Double)] = []
-        for deg in stride(from: -170.0, through: -10.0, by: 8) {      // upper half (y grows downward)
-            let a = deg * .pi / 180, ux = cos(a), uy = sin(a)
-            var prev: (r: Double, s: Double)?
-            var r = 0.15 * d0
-            while r < d0 {
-                guard let v = at(approx.x + ux * r, approx.y + uy * r) else { break }
-                let s = pol * (v - thr)
-                if let pr = prev, pr.s > 0, s <= 0 {
-                    let rr = pr.r + (r - pr.r) * pr.s / (pr.s - s)
-                    pts.append((approx.x + ux * rr, approx.y + uy * rr))
-                    break
+        rays: for deg in stride(from: 0.0, to: 360.0, by: 6) {
+            let a = deg * .pi / 180
+            if a >= teeSide.0 && a <= teeSide.1 { continue }
+            let ux = cos(a), uy = sin(a)
+            var v: [Double] = []
+            for r in rs {
+                guard let q = at(approx.x + ux * r, approx.y + uy * r) else { continue rays }
+                v.append(q)
+            }
+            let n = v.count
+            var g = [Double](repeating: 0, count: n)
+            g[0] = abs(v[1] - v[0]) / 0.5
+            g[n - 1] = abs(v[n - 1] - v[n - 2]) / 0.5
+            for i in 1..<(n - 1) { g[i] = abs(v[i + 1] - v[i - 1]) }
+            var i = 0
+            for j in 1..<n where g[j] > g[i] { i = j }
+            guard g[i] >= 6, i > 0, i < n - 1 else { continue }
+            let den = g[i - 1] - 2 * g[i] + g[i + 1]
+            let off = den < 0 ? 0.5 * (g[i - 1] - g[i + 1]) / den : 0
+            let rr = rs[i] + 0.5 * off
+            pts.append((approx.x + ux * rr, approx.y + uy * rr))
+        }
+        guard pts.count >= 12 else { return nil }
+        var keep = [Bool](repeating: true, count: pts.count)
+        var cx = 0.0, cy = 0.0, rad = 0.0
+        var res = [Double](repeating: 0, count: pts.count)
+        for _ in 0..<3 {
+            // Kåsa fit: x² + y² = 2ax + 2by + c.
+            var A = [[Double]](repeating: [0, 0, 0], count: 3), rhs = [0.0, 0.0, 0.0]
+            for (k, (x, y)) in pts.enumerated() where keep[k] {
+                let row = [2 * x, 2 * y, 1.0], z = x * x + y * y
+                for i in 0..<3 {
+                    rhs[i] += row[i] * z
+                    for j in 0..<3 { A[i][j] += row[i] * row[j] }
                 }
-                prev = (r, s)
-                r += 0.25
             }
+            guard let sol = RearAnalyzer.solve(A, rhs) else { return nil }
+            cx = sol[0]; cy = sol[1]
+            rad = max(1e-9, sol[2] + cx * cx + cy * cy).squareRoot()
+            res = pts.map { abs(hypot($0.0 - cx, $0.1 - cy) - rad) }
+            let lim = max(0.6, 2.5 * median(zip(res, keep).filter { $0.1 }.map { $0.0 }))
+            keep = res.map { $0 <= lim }
+            guard keep.filter({ $0 }).count >= 12 else { return nil }
         }
-        guard pts.count >= 10 else { return nil }
-        // Kåsa fit: x² + y² = 2ax + 2by + c.
-        var A = [[Double]](repeating: [0, 0, 0], count: 3), rhs = [0.0, 0.0, 0.0]
-        for (x, y) in pts {
-            let row = [2 * x, 2 * y, 1.0], z = x * x + y * y
-            for i in 0..<3 {
-                rhs[i] += row[i] * z
-                for j in 0..<3 { A[i][j] += row[i] * row[j] }
-            }
-        }
-        guard let sol = RearAnalyzer.solve(A, rhs) else { return nil }
-        let cx = sol[0], cy = sol[1]
-        let r2 = sol[2] + cx * cx + cy * cy
-        guard r2 > 0 else { return nil }
-        let rad = r2.squareRoot()
-        let res = pts.map { abs(hypot($0.0 - cx, $0.1 - cy) - rad) }.sorted()
-        let medRes = res.count % 2 == 1 ? res[res.count / 2] : (res[res.count / 2 - 1] + res[res.count / 2]) / 2
-        guard medRes <= 0.06 * rad + 0.3, 2 * rad > 0.7 * d0, 2 * rad < 1.3 * d0 else { return nil }
+        let medRes = median(zip(res, keep).filter { $0.1 }.map { $0.0 })
+        guard medRes <= 0.04 * rad + 0.3, 2 * rad > 0.7 * d0, 2 * rad < 1.3 * d0 else { return nil }
         return BallFix(x: cx, y: cy, d: 2 * rad)
     }
 
-    /// Mean over a (2r+1)² box, clamped at the borders.
-    private static func boxMean(_ img: GrayImage, radius r: Int) -> [Double] {
-        let W = img.width, H = img.height
-        var I = [Double](repeating: 0, count: (W + 1) * (H + 1))
-        for y in 0..<H {
-            var rowSum = 0.0
-            for x in 0..<W {
-                rowSum += Double(img.pixels[y * W + x])
-                I[(y + 1) * (W + 1) + x + 1] = I[y * (W + 1) + x + 1] + rowSum
-            }
-        }
-        var out = [Double](repeating: 0, count: W * H)
-        for y in 0..<H {
-            let y0 = max(0, y - r), y1 = min(H, y + r + 1)
-            for x in 0..<W {
-                let x0 = max(0, x - r), x1 = min(W, x + r + 1)
-                let s = I[y1 * (W + 1) + x1] - I[y0 * (W + 1) + x1] - I[y1 * (W + 1) + x0] + I[y0 * (W + 1) + x0]
-                out[y * W + x] = s / Double((y1 - y0) * (x1 - x0))
-            }
-        }
-        return out
-    }
-
-    /// Opening with a horizontal segment of k pixels: removes anything narrower than k (a tee
-    /// under the ball, thin lines) and keeps wider shapes.
-    private static func openH(_ mask: [Bool], width W: Int, height H: Int, k: Int) -> [Bool] {
-        guard k > 1, W >= k else { return mask }
-        var out = [Bool](repeating: false, count: W * H)
-        for y in 0..<H {
-            var run = 0
-            for x in 0..<W {
-                run = mask[y * W + x] ? run + 1 : 0
-                // A run of k ending at x: the segment x-k+1...x is fully set.
-                if run >= k {
-                    if run == k {
-                        for j in (x - k + 1)...x { out[y * W + j] = true }
-                    } else {
-                        out[y * W + x] = true
-                    }
-                }
-            }
-        }
-        return out
+    private static func median(_ v: [Double]) -> Double {
+        guard !v.isEmpty else { return 0 }
+        let s = v.sorted(), n = s.count
+        return n % 2 == 1 ? s[n / 2] : (s[n / 2 - 1] + s[n / 2]) / 2
     }
 
     private static func meanIn(_ img: GrayImage, cx: Double, cy: Double, r0: Double, r1: Double) -> Double {
