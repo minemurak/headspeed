@@ -42,6 +42,20 @@ enum Club: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+/// Where the camera stands.
+enum CameraView: String, CaseIterable, Identifiable, Codable {
+    case front, rear
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .front: return "正面"
+        case .rear: return "後方"
+        }
+    }
+}
+
 struct SwingResult: Codable, Identifiable, Equatable {
     var id = UUID()
     var date = Date()
@@ -54,6 +68,7 @@ struct SwingResult: Codable, Identifiable, Equatable {
     var backswing: Double?      // s
     var downswing: Double?      // s
     var shutter: Double?        // s, exposure duration while recording
+    var view: CameraView?       // nil in records saved before rear view existed (= front)
     var notes: [String] = []
 
     var tempo: Double? {

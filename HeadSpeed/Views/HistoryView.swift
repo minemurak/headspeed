@@ -28,7 +28,7 @@ struct HistoryView: View {
                         HStack {
                             VStack(alignment: .leading) {
                                 Text(r.date, format: .dateTime.month().day().hour().minute())
-                                Text(r.club.label).font(.caption).foregroundStyle(.secondary)
+                                Text(r.view == .rear ? "\(r.club.label)・後方" : r.club.label).font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
                             stat("HS", Fmt.num(r.headSpeed, 1))
@@ -74,7 +74,7 @@ struct HistoryView: View {
     }
 
     private var csv: String {
-        var lines = ["日時,クラブ,ヘッドスピード(m/s),ボール初速(m/s),ミート率,打ち出し角,入射角,テンポ"]
+        var lines = ["日時,クラブ,ヘッドスピード(m/s),ボール初速(m/s),ミート率,打ち出し角,入射角,テンポ,撮影"]
         let df = DateFormatter()
         df.locale = Locale(identifier: "en_US_POSIX")
         df.timeZone = .current
@@ -82,7 +82,7 @@ struct HistoryView: View {
         for r in store.results {
             lines.append([df.string(from: r.date), r.club.label,
                           Fmt.num(r.headSpeed, 1), Fmt.num(r.ballSpeed, 1), Fmt.num(r.smash, 2),
-                          Fmt.num(r.launch, 1), Fmt.num(r.attack, 1), Fmt.num(r.tempo, 2)]
+                          Fmt.num(r.launch, 1), Fmt.num(r.attack, 1), Fmt.num(r.tempo, 2), (r.view ?? .front).label]
                 .map { $0 == "—" ? "" : $0 }.joined(separator: ","))
         }
         return lines.joined(separator: "\r\n") + "\r\n"

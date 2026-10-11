@@ -1,6 +1,7 @@
 import Foundation
 
-/// Frames around one swing, cropped to the horizontal strip that contains the ball.
+/// Frames around one swing: the horizontal strip that contains the ball (face-on), or the
+/// frame above the ball at reduced resolution (rear view).
 struct SwingClip {
     let frames: [GrayImage]
     let times: [Double]          // seconds, per frame (handles dropped frames)
@@ -8,7 +9,11 @@ struct SwingClip {
     let ballY: Double
     let ballD: Double            // ball diameter, strip pixels
     let triggerIndex: Int        // first frame where the ball patch changed
-    var cameraPitch = 0.0        // radians the camera looks down (face-on from above)
+    var cameraPitch = 0.0        // radians the camera looks down
+    var rear = false             // filmed from behind the golfer (down the line)
+    var focal = 0.0              // focal length, clip pixels (rear view only)
+    var centerX = 0.0            // optical centre, clip pixels (rear view only)
+    var centerY = 0.0
 }
 
 struct SwingMeasurement {
@@ -26,6 +31,7 @@ struct SwingMeasurement {
 /// an extra app-only guard that drops physically impossible values.
 enum SwingAnalyzer {
     static func analyze(_ clip: SwingClip, club: Club) -> SwingMeasurement {
+        if clip.rear { return RearAnalyzer.analyze(clip, club: club) }
         var out = SwingMeasurement()
         let n = clip.frames.count
         guard n > 20, clip.times.count == n, (0..<n).contains(clip.triggerIndex) else {
@@ -223,7 +229,7 @@ enum SwingAnalyzer {
     }
 
     /// Drop values that cannot come from a real golf swing.
-    private static func sanityCheck(_ m: inout SwingMeasurement) {
+    static func sanityCheck(_ m: inout SwingMeasurement) {
         if let hs = m.headSpeed, !(8...75).contains(hs) {
             m.headSpeed = nil; m.attack = nil; m.smash = nil
             m.notes.append("ヘッドスピードが範囲外のため除外しました")

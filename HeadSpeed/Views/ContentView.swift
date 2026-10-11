@@ -16,7 +16,7 @@ struct ContentView: View {
 
             VStack(spacing: 10) {
                 HStack(alignment: .top, spacing: 10) {
-                    StatusPill(state: engine.state, ballTooSmall: engine.ballTooSmall, shutterTooSlow: engine.shutterTooSlow)
+                    StatusPill(state: engine.state, view: engine.view, ballTooSmall: engine.ballTooSmall, shutterTooSlow: engine.shutterTooSlow)
                     Spacer()
                     Picker("クラブ", selection: $engine.club) {
                         ForEach(Club.allCases) { Text($0.label).tag($0) }
@@ -39,7 +39,13 @@ struct ContentView: View {
                 Spacer()
 
                 HStack(alignment: .bottom) {
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Picker("撮影位置", selection: $engine.view) {
+                            ForEach(CameraView.allCases) { Text($0.label).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 140)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
                         Text(engine.formatLabel)
                         Text("シャッター \(engine.shutterLabel)")
                             .foregroundStyle(engine.shutterTooSlow ? .orange : .white.opacity(0.7))
@@ -112,6 +118,7 @@ struct GuideOverlay: View {
 
 struct StatusPill: View {
     let state: MeasureState
+    let view: CameraView
     let ballTooSmall: Bool
     let shutterTooSlow: Bool
 
@@ -145,7 +152,12 @@ struct StatusPill: View {
         if case .unavailable(let msg) = state { return msg }
         if ballTooSmall { return "ボールが小さく写っています。カメラを近づけてください。" }
         if shutterTooSlow { return "暗いためシャッターが遅く、精度が落ちます。明るい場所で撮影してください。" }
-        if state == .searching { return "正面から、ボールと同じ高さで2〜3m離して固定してください。" }
+        if state == .searching {
+            switch view {
+            case .front: return "正面から、ボールと同じ高さで2〜3m離して固定してください。"
+            case .rear: return "飛球線の真後ろ、ボールから2.5〜3m・腰の高さに固定。ボールが画面の下寄りに写るようにしてください。"
+            }
+        }
         return nil
     }
 

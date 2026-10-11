@@ -25,6 +25,18 @@ final class CaptureEngine: NSObject, ObservableObject {
     @Published private(set) var shutterTooSlow = false
     @Published private(set) var ballTooSmall = false
     @Published var club: Club = .driver { didSet { lock.lock(); clubValue = club; lock.unlock() } }
+    /// Camera position. Changing it drops a locked ball so the next lock uses the new layout.
+    @Published var view: CameraView = CaptureEngine.savedView {
+        didSet {
+            UserDefaults.standard.set(view.rawValue, forKey: Self.viewKey)
+            lock.lock(); viewValue = view; lock.unlock()
+            queue.async { if self.qState == .armed { self.disarm(resumeAfter: 0) } }
+        }
+    }
+    private static let viewKey = "headspeed.view"
+    private static var savedView: CameraView {
+        UserDefaults.standard.string(forKey: viewKey).flatMap(CameraView.init(rawValue:)) ?? .front
+    }
 
     /// Called on the main thread for every analyzed swing.
     var onResult: ((SwingResult) -> Void)?
@@ -37,6 +49,7 @@ final class CaptureEngine: NSObject, ObservableObject {
     private let analysisQueue = DispatchQueue(label: "headspeed.analysis", qos: .userInitiated)
     private let lock = NSLock()
     private var clubValue: Club = .driver
+    private var viewValue: CameraView = CaptureEngine.savedView
     private var device: AVCaptureDevice?
     private let motion = CMMotionManager()
     private var configured = false
@@ -44,6 +57,8 @@ final class CaptureEngine: NSObject, ObservableObject {
     // MARK: Capture-queue state
     private var qState: MeasureState = .starting
     private var frameW = 0, frameH = 0
+    private var fieldOfView = 0.0           // horizontal, degrees, of the active format
+    private var armedView: CameraView = .front
     private var frameIndex = 0
     private var energyPrev: [UInt8] = []
     private var energyTimes: [Double] = []
@@ -137,6 +152,7 @@ final class CaptureEngine: NSObject, ObservableObject {
         }
         session.commitConfiguration()
         device = dev
+        fieldOfView = Double(format.videoFieldOfView)
         configured = true
 
         let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
@@ -335,11 +351,16 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
     // MARK: Armed
 
     private func arm(_ fix: BallFix, y: UnsafePointer<UInt8>, bpr: Int, t: Double) {
-        let y0 = max(0, Int(fix.y - 14 * fix.d))
+        lock.lock(); armedView = viewValue; lock.unlock()
+        // Face-on: a strip around the ball. Rear: everything above the ball too, since the
+        // head comes down from high in the frame (at half resolution for a 1080p format).
+        let rear = armedView == .rear
+        let y0 = rear ? 0 : max(0, Int(fix.y - 14 * fix.d))
         let y1 = min(frameH, Int(fix.y + 3 * fix.d))
         let rows = y1 - y0
+        let budget = rear ? 520_000 : 460_000
         var step = 1
-        while (frameW / step) * (rows / step) > 460_000 { step += 1 }
+        while (frameW / step) * (rows / step) > budget { step += 1 }
         let sw = frameW / step, sh = rows / step
         strip = (y0, step, sw, sh)
         // ~1 s of history at 240fps; the analyzer needs 110 frames before impact.
@@ -443,12 +464,20 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
     private func runAnalysis() {
         guard let ring, let g = strip, let ball = armedBall else { disarm(resumeAfter: 0); return }
         let snap = ring.snapshot()
-        let clip = SwingClip(frames: snap.frames, times: snap.times,
+        var clip = SwingClip(frames: snap.frames, times: snap.times,
                              ballX: ball.x / Double(g.step),
                              ballY: (ball.y - Double(g.y0)) / Double(g.step),
                              ballD: ball.d / Double(g.step),
                              triggerIndex: triggerIndex - snap.firstIndex,
                              cameraPitch: armedPitch)
+        let view = armedView
+        if view == .rear {
+            let fov = fieldOfView > 1 && fieldOfView < 179 ? fieldOfView : 70
+            clip.rear = true
+            clip.focal = Double(frameW) / 2 / tan(fov * .pi / 360) / Double(g.step)
+            clip.centerX = Double(frameW) / 2 / Double(g.step)
+            clip.centerY = (Double(frameH) / 2 - Double(g.y0)) / Double(g.step)
+        }
         let eTimes = energyTimes, eVals = energyVals
         let shutter = armedShutter
         lock.lock(); let club = clubValue; lock.unlock()
@@ -458,6 +487,7 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
             let impact = m.impactTime ?? clip.times[min(max(clip.triggerIndex, 0), clip.times.count - 1)]
             let tempo = TempoAnalyzer.tempo(times: eTimes, energy: eVals, impact: impact)
             var result = SwingResult(club: club)
+            result.view = view
             result.headSpeed = m.headSpeed
             result.ballSpeed = m.ballSpeed
             result.smash = m.smash
