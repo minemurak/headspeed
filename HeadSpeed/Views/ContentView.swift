@@ -86,7 +86,7 @@ struct GuideOverlay: View {
     var body: some View {
         GeometryReader { geo in
             let rect = fitted(geo.size, aspect: engine.frameAspect)
-            let g = CaptureEngine.guide
+            let g = CaptureEngine.guide(for: engine.view)
             let guideRect = CGRect(x: rect.minX + rect.width * CGFloat(g.0), y: rect.minY + rect.height * CGFloat(g.1),
                                    width: rect.width * CGFloat(g.2 - g.0), height: rect.height * CGFloat(g.3 - g.1))
             ZStack {
@@ -155,7 +155,7 @@ struct StatusPill: View {
         if state == .searching {
             switch view {
             case .front: return "正面から、ボールと同じ高さで2〜3m離して固定してください。"
-            case .rear: return "飛球線の真後ろ、ボールから2.5〜3m・腰の高さに固定。ボールが画面の下寄りに写るようにしてください。"
+            case .rear: return "飛球線の真後ろ、ボールから2.5〜3m・腰の高さに固定。ボールが点線枠（画面中央の下寄り）に入るようにしてください。"
             }
         }
         return nil

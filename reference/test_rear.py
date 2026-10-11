@@ -13,17 +13,21 @@ cases = [
     dict(cam_x=0.8, seed=8, handed=-1),
     dict(hs=36, bs=53, radius=1.5, cam_x=-0.6, seed=9),
     dict(cam_h=0.3, look=(0.0, 0.4, 2.0), seed=10),
+    # backlit: the ball is darker than what is behind it, with less contrast, so wider tolerances
+    dict(ball_val=45, sky_val=235, seed=11, tol=(0.06, 0.035)),
+    dict(hs=46, bs=68, launch=11, ball_val=40, sky_val=245, cam_h=1.0, look=(0.0, 0.3, 3.0), seed=12, handed=-1, tol=(0.06, 0.035)),
 ]
 failures = []
 for c in cases:
     club = c.pop('club', '1W')
+    tol_hs, tol_bs = c.pop('tol', (0.04, 0.025))
     s = render(**c)
     r = analyze_rear(s['frames'], s['times'], s['ball'], s['trig'], s['f'], s['cx'], s['cy'], s['pitch'], club=club)
     hs, bs, la = c.get('hs', 42.0), c.get('bs', 62.0), c.get('launch', 12.0)
     f = lambda k: (f"{r[k]:.2f}" if k in r else '-')
     print(dict(hs=hs, bs=bs, launch=la, club=club), '->', 'hs', f('hs'), 'bs', f('bs'), 'smash', f('smash'),
           '(true %.2f)' % (bs/hs), 'launch', f('launch'), 'R', f('radius'), r.get('headFrames'), r.get('ballFrames'), r['notes'])
-    checks = [('hs', lambda v: abs(v/hs - 1) < 0.04), ('bs', lambda v: abs(v/bs - 1) < 0.025),
+    checks = [('hs', lambda v: abs(v/hs - 1) < tol_hs), ('bs', lambda v: abs(v/bs - 1) < tol_bs),
               ('launch', lambda v: abs(v - la) < 1.5), ('smash', lambda v: abs(v - bs/hs) < 0.07)]
     for k, ok in checks:
         if k not in r or not ok(r[k]): failures.append((c, k, r.get(k)))

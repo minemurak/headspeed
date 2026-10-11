@@ -78,12 +78,13 @@ enum RearAnalyzer {
                     else if q >= rIn * rIn && q < rOut * rOut { ring.append(Double(bg[i]) - g(i)) }
                 }
             }
-            if !win.isEmpty, median(dens) > 25 {
+            // The ball may be brighter or (backlit) darker than what is behind it.
+            if !win.isEmpty, abs(median(dens)) > 25 {
                 // Not clipped at 0, so background noise around the ball cancels out.
                 let off = ring.isEmpty ? 0 : median(ring)
                 var s = 0.0
                 for (j, i) in win.enumerated() {
-                    s += min(max((Double(bg[i]) - g(i) - off) / max(dens[j], 1), -0.5), 1.2)
+                    s += min(max((Double(bg[i]) - g(i) - off) / (abs(dens[j]) < 1 ? 1 : dens[j]), -0.5), 1.2)
                 }
                 let est = 2 * (max(s, 0) / .pi).squareRoot()
                 if est > 0.8 * d && est < 1.2 * d { d0 = est }
@@ -92,13 +93,13 @@ enum RearAnalyzer {
         let z0 = f * ballM / d0
         let b3 = ray(bx, by) * z0
 
-        // 3. Ball in flight: bright compact blobs, sized by summed coverage.
+        // 3. Ball in flight: compact blobs that look like the ball, sized by summed coverage.
         let a0 = Double.pi * d0 * d0 / 4
         let fr = n > 1 ? median((1..<n).map { times[$0] - times[$0 - 1] }) : 1.0 / 240
         func den(_ i: Int) -> Double { iBall - Double(bg[i]) }
         let rx0 = max(0, Int(bx - 15 * d0)), rx1 = min(W, Int(bx + 15 * d0))
         let ry0 = max(0, Int(by - 25 * d0)), ry1 = min(H, Int(by + 1.5 * d0))
-        var bpts: [(t: Double, u: Double, v: Double, d: Double)] = []
+        var bpts: [(t: Double, u: Double, v: Double, d: Double, ds: Double)] = []
         if rx0 < rx1 && ry0 < ry1 {
             let rw = rx1 - rx0, rh = ry1 - ry0
             for k in kImp..<min(n, kImp + 16) {
@@ -107,10 +108,10 @@ enum RearAnalyzer {
                     for x in rx0..<rx1 where !inRest(x, y) {
                         let i = y * W + x
                         let dn = den(i)
-                        if dn > 20 && (px(k, i) - Double(bg[i])) / dn > 0.5 { mask[(y - ry0) * rw + (x - rx0)] = true }
+                        if abs(dn) > 20 && (px(k, i) - Double(bg[i])) / dn > 0.5 { mask[(y - ry0) * rw + (x - rx0)] = true }
                     }
                 }
-                var cands: [(u: Double, v: Double, d: Double)] = []
+                var cands: [(u: Double, v: Double, d: Double, ds: Double)] = []
                 for b in Blobs.find(mask: mask, width: rw, height: rh) {
                     let area = Double(b.area)
                     guard area >= 0.08 * a0, area <= 2.2 * a0 else { continue }
@@ -124,17 +125,20 @@ enum RearAnalyzer {
                     for y in Y0..<Y1 {
                         for x in X0..<X1 where !(x >= x0 && x < x1 && y >= y0 && y < y1) {
                             let i = y * W + x
-                            if den(i) > 20 && !inRest(x, y) { ring.append(px(k, i) - Double(bg[i])) }
+                            if abs(den(i)) > 20 && !inRest(x, y) { ring.append(px(k, i) - Double(bg[i])) }
                         }
                     }
                     let off = ring.count > 8 ? median(ring) : 0
                     var s = 0.0, sp = 0.0, su = 0.0, sv = 0.0, cmax = -1.0
+                    var absDen: [Double] = []
                     for y in y0..<y1 {
                         for x in x0..<x1 {
                             let i = y * W + x
+                            let dn = den(i)
+                            absDen.append(abs(dn) > 20 ? abs(dn) : 1)
                             var c = 0.0
-                            if den(i) > 20 && !inRest(x, y) {
-                                c = min(max((px(k, i) - Double(bg[i]) - off) / max(den(i), 1), -0.5), 1.2)
+                            if abs(dn) > 20 && !inRest(x, y) {
+                                c = min(max((px(k, i) - Double(bg[i]) - off) / dn, -0.5), 1.2)
                             }
                             s += c
                             cmax = max(cmax, c)
@@ -148,30 +152,35 @@ enum RearAnalyzer {
                     // Must not touch the resting spot (coverage there is unreliable).
                     let lim = 0.75 * d0 + dk / 2 + 1
                     if (u - bx) * (u - bx) + (v - by) * (v - by) < lim * lim { continue }
-                    if cmax < 0.7 { continue }          // not as bright as the ball
-                    cands.append((u, v, dk))
+                    if cmax < 0.7 { continue }          // not as bright (or dark) as the ball
+                    // Size noise grows as the ball's contrast with what is behind it drops.
+                    cands.append((u, v, dk, max(1.0, 100 / median(absDen))))
                 }
                 // Follow the ball outward from its resting spot.
                 let ref = bpts.last.map { ($0.u, $0.v) } ?? (bx, by)
                 let gap = bpts.last.map { max(1.0, (times[k] - $0.t) / fr) } ?? 1
                 let lim = bpts.isEmpty ? 6 * d0 : 5 * d0 * gap
-                var best: (dist: Double, u: Double, v: Double, d: Double)?
+                var best: (dist: Double, u: Double, v: Double, d: Double, ds: Double)?
                 for c in cands {
                     let dist = hypot(c.u - ref.0, c.v - ref.1)
                     if dist > lim { continue }
-                    if best == nil || dist < best!.dist { best = (dist, c.u, c.v, c.d) }
+                    if best == nil || dist < best!.dist { best = (dist, c.u, c.v, c.d, c.ds) }
                 }
-                if let b = best { bpts.append((times[k], b.u, b.v, b.d)) }
+                if let b = best { bpts.append((times[k], b.u, b.v, b.d, b.ds)) }
             }
         }
 
-        // Straight 3D line from the resting ball; drop frames that do not fit (a ball still
-        // partly hidden by the head looks too small, i.e. too far).
-        func fitLine(_ pts: [(t: Double, u: Double, v: Double, d: Double)]) -> (v: Vec3, t0: Double, errs: [Double])? {
+        // Straight 3D line from the resting ball, fitted in image space: the rest position slides
+        // along its ray (its apparent size at rest is only a soft hint for its depth), plus
+        // velocity and launch time. Frames that do not fit are dropped one at a time (a ball
+        // still partly hidden by the head looks too small, i.e. too far).
+        let ray0 = ray(bx, by)
+        func fitLine(_ pts: [(t: Double, u: Double, v: Double, d: Double, ds: Double)]) -> (v: Vec3, t0: Double, errs: [Double])? {
             let P = pts.map { ray($0.u, $0.v) * (f * ballM / $0.d) }
-            let w = pts.map { ($0.d / d0) * ($0.d / d0) }      // depth error grows as the ball shrinks
+            // Depth error grows as the ball shrinks.
+            let w = pts.map { ($0.d / d0) * ($0.d / d0) / ($0.ds * $0.ds) }
             var best: (e: Double, v: Vec3, t0: Double)?
-            // Launch: after the ball core first changed (minus slack) and before the ball was seen.
+            // Start: launch after the ball core first changed (minus slack), before the ball was seen.
             var tt0 = times[kImp] - 2 * fr
             while tt0 < pts[0].t {
                 var num = Vec3(0, 0, 0), wsum = 0.0
@@ -191,30 +200,7 @@ enum RearAnalyzer {
                 }
                 tt0 += fr / 20
             }
-            guard let b = best else { return nil }
-            let errs = pts.map { q -> Double in
-                let pq = b3 + b.v * (q.t - b.t0)
-                let dq = f * ballM / pq.z
-                let uq = f * pq.x / pq.z + cx, vq = f * pq.y / pq.z + cy
-                return abs(dq - q.d) / 0.3 + hypot(uq - q.u, vq - q.v) / 0.7
-            }
-            return (b.v, b.t0, errs)
-        }
-        var cand = Array(bpts.filter { $0.d <= 1.05 * d0 }.prefix(10))
-        var vel: Vec3?
-        var t0 = times[kImp]
-        while cand.count >= 3 {
-            guard let fl = fitLine(cand) else { break }
-            let i = fl.errs.indices.max { fl.errs[$0] < fl.errs[$1] }!
-            if fl.errs[i] > 4 && cand.count > 3 { cand.remove(at: i); continue }
-            if fl.errs[i] <= 6 { vel = fl.v; t0 = fl.t0 }
-            break
-        }
-        if let v0 = vel {
-            // Refine in image space: rest position along its ray, velocity and launch time,
-            // with the ball's apparent size at rest only as a soft hint for its depth.
-            let ray0 = ray(bx, by)
-            let pts = cand
+            guard let start = best else { return nil }
             let resid: ([Double]) -> [Double]? = { q in
                 let vq = Vec3(q[2], q[3], q[4])
                 var r: [Double] = []
@@ -222,14 +208,32 @@ enum RearAnalyzer {
                     let P = ray0 * q[0] + vq * (c.t - q[1])
                     if P.z < 0.3 { return nil }
                     r += [(f * P.x / P.z + cx - c.u) / 0.3, (f * P.y / P.z + cy - c.v) / 0.3,
-                          (f * ballM / P.z - c.d) / 0.12]
+                          (f * ballM / P.z - c.d) / (0.12 * c.ds)]
                 }
                 r.append((q[0] - z0) / (0.015 * z0))
                 return r
             }
-            if let fit = levenbergMarquardt(resid, [z0, t0, v0.x, v0.y, v0.z], h: [1e-4, 1e-6, 1e-3, 1e-3, 1e-3]) {
-                vel = Vec3(fit.p[2], fit.p[3], fit.p[4]); t0 = fit.p[1]
+            guard let fit = levenbergMarquardt(resid, [z0, start.t0, start.v.x, start.v.y, start.v.z],
+                                               h: [1e-4, 1e-6, 1e-3, 1e-3, 1e-3]) else { return nil }
+            let p = fit.p
+            let vfit = Vec3(p[2], p[3], p[4])
+            let errs = pts.map { q -> Double in
+                let pq = ray0 * p[0] + vfit * (q.t - p[1])
+                let dq = f * ballM / pq.z
+                let uq = f * pq.x / pq.z + cx, vq = f * pq.y / pq.z + cy
+                return abs(dq - q.d) / (0.3 * q.ds) + hypot(uq - q.u, vq - q.v) / 0.7
             }
+            return (vfit, p[1], errs)
+        }
+        var cand = Array(bpts.filter { $0.d <= 1.05 * d0 }.prefix(10))
+        var vel: Vec3?
+        var t0 = times[kImp]
+        while cand.count >= 3 {
+            guard let fl = fitLine(cand) else { break }
+            let i = fl.errs.indices.max { fl.errs[$0] < fl.errs[$1] }!
+            if fl.errs[i] > max(2.5, 2.5 * median(fl.errs)) && cand.count > 3 { cand.remove(at: i); continue }
+            if fl.errs[i] <= 6 { vel = fl.v; t0 = fl.t0 }
+            break
         }
         if let v = vel {
             let speed = v.norm
@@ -411,7 +415,7 @@ enum RearAnalyzer {
     }
 
     /// Gaussian elimination with partial pivoting.
-    private static func solve(_ A: [[Double]], _ b: [Double]) -> [Double]? {
+    static func solve(_ A: [[Double]], _ b: [Double]) -> [Double]? {
         let n = b.count
         var M = A, y = b
         for c in 0..<n {
