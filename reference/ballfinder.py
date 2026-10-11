@@ -1,5 +1,5 @@
 """Reference for BallFinder.swift: finding the ball at rest (search on a 4x-downscaled frame,
-then a full-resolution refine). search = face-on; search_rear / refine_rear = rear view."""
+then a full-resolution refine). search = face-on; search_rear (half-size frame) / refine_rear = rear view."""
 import numpy as np, math
 from analyzer import components
 
@@ -43,85 +43,99 @@ def pick(img, mask, minD, maxD):
     return best[0] if best else None
 
 
-# ---- rear view: the ball may be darker than its surroundings (backlit) and sit on a tee ----
+# ---- rear view: the ball sits on a tee, often in front of a split background (dark field
+# above, bright path below) or backlit, so it is neither reliably brighter nor darker than its
+# surroundings. Its outline is still a circle of edges: look for that instead of a blob.
 
-def box_mean(img, r):
-    """Mean over a (2r+1)^2 box, clamped at the borders (integral image)."""
-    H, W = img.shape
-    I = np.zeros((H + 1, W + 1)); I[1:, 1:] = img.astype(float).cumsum(0).cumsum(1)
-    ys = np.arange(H); xs = np.arange(W)
-    y0 = np.clip(ys - r, 0, H); y1 = np.clip(ys + r + 1, 0, H)
-    x0 = np.clip(xs - r, 0, W); x1 = np.clip(xs + r + 1, 0, W)
-    S = I[y1][:, x1] - I[y0][:, x1] - I[y1][:, x0] + I[y0][:, x0]
-    return S/((y1 - y0)[:, None]*(x1 - x0)[None, :])
+BOTTOM = (math.radians(50), math.radians(130))     # the tee's side (image y grows downward)
 
-def open_h(mask, k):
-    """Morphological opening with a horizontal segment of k pixels: removes anything narrower
-    than k (a tee under the ball, thin lines) and keeps wider shapes."""
-    if k <= 1: return mask.copy()
-    H, W = mask.shape
-    c = np.zeros((H, W + 1), int); c[:, 1:] = mask.cumsum(1)
-    er = np.zeros_like(mask)
-    er[:, :W - k + 1] = (c[:, k:] - c[:, :W - k + 1]) == k      # run of k starting at x
-    out = np.zeros_like(mask)
-    for j in range(k): out[:, j:W - k + 1 + j] |= er[:, :W - k + 1]
-    return out
+def sobel(img):
+    p = np.pad(img.astype(float), 1, mode='edge')
+    gx = (p[:-2, 2:] + 2*p[1:-1, 2:] + p[2:, 2:] - p[:-2, :-2] - 2*p[1:-1, :-2] - p[2:, :-2])/8
+    gy = (p[2:, :-2] + 2*p[2:, 1:-1] + p[2:, 2:] - p[:-2, :-2] - 2*p[:-2, 1:-1] - p[:-2, 2:])/8
+    return gx, gy
 
-def search_rear(img, guide, minD, maxD, anchor):
-    """Round blob of either polarity in the guide (a backlit ball looks dark); several opening
-    widths cut it loose from a tee. Picks the candidate nearest the anchor (x, y in 0..1)."""
+def coverage(gx, gy, mag, cx, cy, r, emin):
+    """Share of directions (tee side skipped) with a radial edge on the circle."""
+    H, W = mag.shape; hit = n = 0
+    for a in np.radians(np.arange(0, 360, 10)):
+        if BOTTOM[0] <= a <= BOTTOM[1]: continue
+        ux, uy = math.cos(a), math.sin(a); n += 1
+        for dr in (0, -1, 1, -1.5, 1.5):
+            x = int(round(cx + ux*(r + dr))); y = int(round(cy + uy*(r + dr)))
+            if not (0 <= x < W and 0 <= y < H): continue
+            m = mag[y, x]
+            if m >= emin and abs(gx[y, x]*ux + gy[y, x]*uy) >= 0.93*m: hit += 1; break
+    return hit/n
+
+def search_rear(img, guide, minD, maxD, anchor, emin=10.0):
+    """Circle Hough on edge directions (either polarity) inside the guide, on a half-size
+    frame. Candidates must have edges all round (a square sticker or a tee fails); among
+    them, the one nearest the anchor (x, y in 0..1) wins; specks near the minimum size count half."""
     H, W = img.shape
     gx0, gx1 = max(0, int(guide[0]*W)), min(W, int(guide[2]*W))
     gy0, gy1 = max(0, int(guide[1]*H)), min(H, int(guide[3]*H))
-    loc = box_mean(img, max(4, int(maxD*0.7)))
+    gx, gy = sobel(img); mag = np.hypot(gx, gy)
+    ys, xs = np.nonzero(mag[gy0:gy1, gx0:gx1] >= emin); ys = ys + gy0; xs = xs + gx0
+    nx = gx[ys, xs]/mag[ys, xs]; ny = gy[ys, xs]/mag[ys, xs]
+    gw, gh = gx1 - gx0, gy1 - gy0
+    cands = []
+    for r in np.arange(max(2.0, minD/2), maxD/2 + 0.01, 1.0):
+        acc = np.zeros((gh, gw))
+        for s in (1, -1):
+            cx = np.rint(xs + s*r*nx).astype(int) - gx0; cy = np.rint(ys + s*r*ny).astype(int) - gy0
+            ok = (cx >= 0) & (cx < gw) & (cy >= 0) & (cy < gh)
+            np.add.at(acc, (cy[ok], cx[ok]), 1)
+        a3 = np.zeros_like(acc)            # 3x3 sum: votes scatter by a pixel or so
+        a3[1:-1, 1:-1] = sum(acc[1+dy:gh-1+dy, 1+dx:gw-1+dx] for dy in (-1, 0, 1) for dx in (-1, 0, 1))
+        score = a3/(2*math.pi*r)
+        for y, x in np.argwhere(score >= 0.6):
+            if score[y, x] < score[max(0, y-1):y+2, max(0, x-1):x+2].max(): continue
+            cands.append((score[y, x], x + gx0, y + gy0, r))
+    cands.sort(reverse=True)
     best = None
-    for pol in (1, -1):
-        raw = np.zeros((H, W), bool)
-        raw[gy0:gy1, gx0:gx1] = pol*(img[gy0:gy1, gx0:gx1] - loc[gy0:gy1, gx0:gx1]) >= 25
-        for k in (2, 3, 5, 7):
-            lo, hi = max(minD, k/0.6), min(maxD, max(k/0.3, 6))
-            if lo > hi: continue
-            for b in components(open_h(raw, k)):
-                bw = b['maxx'] - b['minx'] + 1; bh = b['maxy'] - b['miny'] + 1
-                if not (lo <= bw <= hi) or not (0.7*bw <= bh <= 1.3*bw): continue
-                if b['area']/(bw*bh) < 0.6: continue
-                cx = b['sx']/b['area']; cy = b['sy']/b['area']; d = (bw + bh)/2
-                contrast = pol*(mean_in(img, cx, cy, 0, d*0.3) - mean_in(img, cx, cy, d*0.8, d*1.6))
-                if contrast < 35: continue
-                dist = math.hypot(cx/W - anchor[0], cy/H - anchor[1])
-                if best is None or dist < best[1]: best = ((cx, cy, d), dist)
+    for sc, x, y, r in cands[:60]:
+        cov = coverage(gx, gy, mag, x, y, r, emin)
+        if cov < 0.75: continue
+        key = cov*min(1.0, r/minD)/(1 + 3*math.hypot(x/W - anchor[0], y/H - anchor[1]))
+        if best is None or key > best[1]: best = ((float(x), float(y), 2.0*r), key)
     return best[0] if best else None
 
-def refine_rear(img, approx):
-    """Sub-pixel circle from the ball's upper edge (a tee or the ground can touch the lower
-    half): rays from the approximate centre, threshold crossings, least-squares circle."""
-    cx0, cy0, d0 = approx
+def bilinear(img, x, y):
     H, W = img.shape
-    inside = mean_in(img, cx0, cy0, 0, d0*0.25); ring = mean_in(img, cx0, cy0, d0*0.9, d0*1.4)
-    if abs(inside - ring) < 30: return None
-    thr = (inside + ring)/2; pol = 1 if inside > ring else -1
-    def at(x, y):
-        x0, y0 = int(math.floor(x)), int(math.floor(y))
-        if x0 < 0 or y0 < 0 or x0 + 1 >= W or y0 + 1 >= H: return None
-        fx, fy = x - x0, y - y0
-        return ((1-fx)*(1-fy)*img[y0, x0] + fx*(1-fy)*img[y0, x0+1] + (1-fx)*fy*img[y0+1, x0] + fx*fy*img[y0+1, x0+1])
+    x0, y0 = int(math.floor(x)), int(math.floor(y))
+    if x0 < 0 or y0 < 0 or x0 + 1 >= W or y0 + 1 >= H: return None
+    fx, fy = x - x0, y - y0
+    return ((1-fx)*(1-fy)*img[y0, x0] + fx*(1-fy)*img[y0, x0+1] + (1-fx)*fy*img[y0+1, x0] + fx*fy*img[y0+1, x0+1])
+
+def refine_rear(img, approx):
+    """Sub-pixel circle: on rays from the approximate centre (tee side skipped), the strongest
+    radial edge with a parabolic peak, then a least-squares circle with outlier rejection."""
+    cx0, cy0, d0 = approx
+    rs = np.arange(0.2*d0, 0.85*d0, 0.5)
     pts = []
-    for a in np.radians(np.arange(-170, -9, 8)):        # upper half (image y grows downward)
+    for a in np.radians(np.arange(0, 360, 6)):
+        if BOTTOM[0] <= a <= BOTTOM[1]: continue
         ux, uy = math.cos(a), math.sin(a)
-        prev = None; r = 0.15*d0
-        while r < 1.0*d0:
-            v = at(cx0 + ux*r, cy0 + uy*r)
-            if v is None: break
-            s = pol*(v - thr)
-            if prev is not None and prev[1] > 0 >= s:
-                rr = prev[0] + (r - prev[0])*prev[1]/(prev[1] - s)
-                pts.append((cx0 + ux*rr, cy0 + uy*rr)); break
-            prev = (r, s); r += 0.25
-    if len(pts) < 10: return None
+        v = [bilinear(img, cx0 + ux*r, cy0 + uy*r) for r in rs]
+        if any(q is None for q in v): continue
+        g = np.abs(np.gradient(np.array(v, float), 0.5))
+        i = int(np.argmax(g))
+        if g[i] < 6 or i == 0 or i == len(g) - 1: continue
+        den = g[i-1] - 2*g[i] + g[i+1]
+        off = 0.5*(g[i-1] - g[i+1])/den if den < 0 else 0.0
+        rr = rs[i] + 0.5*off
+        pts.append((cx0 + ux*rr, cy0 + uy*rr))
+    if len(pts) < 12: return None
     P = np.array(pts)
-    A = np.c_[2*P[:, 0], 2*P[:, 1], np.ones(len(P))]
-    sol = np.linalg.lstsq(A, (P**2).sum(1), rcond=None)[0]
-    cx, cy = sol[0], sol[1]; rad = math.sqrt(sol[2] + cx*cx + cy*cy)
-    res = np.abs(np.hypot(P[:, 0] - cx, P[:, 1] - cy) - rad)
-    if np.median(res) > 0.06*rad + 0.3 or not (0.7*d0 < 2*rad < 1.3*d0): return None
-    return cx, cy, 2*rad, pol
+    keep = np.ones(len(P), bool)
+    for _ in range(3):
+        Q = P[keep]
+        A = np.c_[2*Q[:, 0], 2*Q[:, 1], np.ones(len(Q))]
+        sol = np.linalg.lstsq(A, (Q**2).sum(1), rcond=None)[0]
+        cx, cy = sol[0], sol[1]; rad = math.sqrt(max(1e-9, sol[2] + cx*cx + cy*cy))
+        res = np.abs(np.hypot(P[:, 0] - cx, P[:, 1] - cy) - rad)
+        keep = res <= max(0.6, 2.5*float(np.median(res[keep])))
+        if keep.sum() < 12: return None
+    if np.median(res[keep]) > 0.04*rad + 0.3 or not (0.7*d0 < 2*rad < 1.3*d0): return None
+    return cx, cy, 2*rad

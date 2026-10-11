@@ -312,7 +312,10 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
     // MARK: Ball search
 
     private func searchBall(_ y: UnsafePointer<UInt8>, W: Int, H: Int, bpr: Int, t: Double) {
-        let f = 4
+        lock.lock(); let rear = viewValue == .rear; lock.unlock()
+        // Rear: the ball's outline is searched on a half-size frame (a quarter is too coarse
+        // for a ~30 px ball's edges); face-on keeps the quarter-size bright-blob search.
+        let f = rear ? 2 : 4
         let sw = W / f, sh = H / f
         var small = [UInt8](repeating: 0, count: sw * sh)
         for sy in 0..<sh {
@@ -320,7 +323,6 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
             for sx in 0..<sw { small[sy * sw + sx] = row[sx * f] }
         }
         let img = GrayImage(width: sw, height: sh, pixels: small)
-        lock.lock(); let rear = viewValue == .rear; lock.unlock()
         let found = rear
             ? BallFinder.searchRear(img, guide: Self.guide(for: .rear), minD: 14.0 / Double(f), maxD: 70.0 / Double(f), anchor: (0.5, 0.75))
             : BallFinder.search(img, guide: Self.guide(for: .front), minD: 12.0 / Double(f), maxD: 110.0 / Double(f))
@@ -329,7 +331,7 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
             publishBall(nil)
             return
         }
-        let approx = BallFix(x: coarse.x * Double(f) + 1.5, y: coarse.y * Double(f) + 1.5, d: coarse.d * Double(f))
+        let approx = BallFix(x: coarse.x * Double(f) + Double(f - 1) / 2, y: coarse.y * Double(f) + Double(f - 1) / 2, d: coarse.d * Double(f))
         // Full-resolution crop around the coarse fix for a sub-pixel diameter.
         let half = Int(approx.d * 1.6) + 2
         let x0 = max(0, Int(approx.x) - half), x1 = min(W, Int(approx.x) + half)
