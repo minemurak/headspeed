@@ -42,7 +42,13 @@ final class CaptureEngine: NSObject, ObservableObject {
     var onResult: ((SwingResult) -> Void)?
 
     /// Guide area where the ball must be placed (x0, y0, x1, y1), normalized.
-    static let guide = (0.15, 0.30, 0.85, 0.97)
+    static func guide(for view: CameraView) -> (Double, Double, Double, Double) {
+        switch view {
+        case .front: return (0.15, 0.30, 0.85, 0.97)
+        // From behind, the ball sits low and in the middle; this keeps sky and the range out.
+        case .rear: return (0.25, 0.45, 0.75, 0.97)
+        }
+    }
 
     let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "headspeed.capture", qos: .userInteractive)
@@ -314,7 +320,11 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
             for sx in 0..<sw { small[sy * sw + sx] = row[sx * f] }
         }
         let img = GrayImage(width: sw, height: sh, pixels: small)
-        guard let coarse = BallFinder.search(img, guide: Self.guide, minD: 12.0 / Double(f), maxD: 110.0 / Double(f)) else {
+        lock.lock(); let rear = viewValue == .rear; lock.unlock()
+        let found = rear
+            ? BallFinder.searchRear(img, guide: Self.guide(for: .rear), minD: 14.0 / Double(f), maxD: 70.0 / Double(f), anchor: (0.5, 0.75))
+            : BallFinder.search(img, guide: Self.guide(for: .front), minD: 12.0 / Double(f), maxD: 110.0 / Double(f))
+        guard let coarse = found else {
             candidate = nil; stableCount = 0
             publishBall(nil)
             return
@@ -332,7 +342,7 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
         }
         let cropImg = GrayImage(width: x1 - x0, height: y1 - y0, pixels: crop)
         let local = BallFix(x: approx.x - Double(x0), y: approx.y - Double(y0), d: approx.d)
-        guard let r = BallFinder.refine(cropImg, approx: local) else {
+        guard let r = rear ? BallFinder.refineRear(cropImg, approx: local) : BallFinder.refine(cropImg, approx: local) else {
             candidate = nil; stableCount = 0
             publishBall(nil)
             return

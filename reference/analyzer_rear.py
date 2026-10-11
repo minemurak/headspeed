@@ -119,11 +119,12 @@ def analyze_rear(frames, times, ball, trig, f, cx, cy, pitch=0.0, club='1W'):
     G = median_of(F, late)
     win = r2 < (0.5*d + 2.5)**2
     den = Iball - G[win]
-    if np.median(den) > 25:
+    # the ball may be brighter or (backlit) darker than what is behind it
+    if abs(np.median(den)) > 25:
         # not clipped at 0, so background noise around the ball cancels out
         ringw = (r2 >= (0.5*d + 3.5)**2) & (r2 < (0.5*d + 7)**2)
         off = float(np.median(Bg[ringw] - G[ringw]))
-        cov = np.clip((Bg[win] - G[win] - off)/np.maximum(den, 1), -0.5, 1.2)
+        cov = np.clip((Bg[win] - G[win] - off)/np.where(np.abs(den) < 1, 1, den), -0.5, 1.2)
         d0 = 2*math.sqrt(cov.sum()/math.pi)
         if not (0.8*d < d0 < 1.2*d): d0 = d
     else:
@@ -132,12 +133,13 @@ def analyze_rear(frames, times, ball, trig, f, cx, cy, pitch=0.0, club='1W'):
     B3 = ray(bx, by)*Z0
     # 3. ball in flight: bright compact blobs, sized by summed coverage
     den = Iball - Bg
-    okden = den > 20
+    okden = np.abs(den) > 20
+    den = np.where(okden, den, 1)
     A0 = math.pi*d0*d0/4
     bpts = []
     fr = float(np.median(np.diff(times))) if n > 1 else 1/240
     for k in range(kImp, min(n, kImp + 16)):
-        c = np.where(okden, (F[k] - Bg)/np.maximum(den, 1), 0)
+        c = np.where(okden, (F[k] - Bg)/den, 0)
         c = np.clip(c, -0.5, 1.2)
         m = c > 0.5
         m[:max(0, int(by - 25*d0))] = False
@@ -158,7 +160,7 @@ def analyze_rear(frames, times, ball, trig, f, cx, cy, pitch=0.0, club='1W'):
             ringm = np.ones((Y1 - Y0, X1 - X0), bool); ringm[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0] = False
             ringm &= okden[Y0:Y1, X0:X1] & ~rest[Y0:Y1, X0:X1]
             off = float(np.median((F[k] - Bg)[Y0:Y1, X0:X1][ringm])) if ringm.sum() > 8 else 0.0
-            sub = np.where(okden[y0:y1, x0:x1], (F[k][y0:y1, x0:x1] - Bg[y0:y1, x0:x1] - off)/np.maximum(den[y0:y1, x0:x1], 1), 0)
+            sub = np.where(okden[y0:y1, x0:x1], (F[k][y0:y1, x0:x1] - Bg[y0:y1, x0:x1] - off)/den[y0:y1, x0:x1], 0)
             sub = np.clip(sub, -0.5, 1.2)
             sub[rest[y0:y1, x0:x1]] = 0
             S = sub.sum()
@@ -169,25 +171,30 @@ def analyze_rear(frames, times, ball, trig, f, cx, cy, pitch=0.0, club='1W'):
             # must not touch the resting spot (coverage there is unreliable)
             if (u - bx)**2 + (v - by)**2 < (0.75*d0 + dk/2 + 1)**2: continue
             if sub.max() < 0.7: continue          # not as bright as the ball
-            cands.append((u, v, dk))
+            # size noise grows as the ball's contrast with what is behind it drops
+            ds = max(1.0, 100/float(np.median(np.abs(den[y0:y1, x0:x1]))))
+            cands.append((u, v, dk, ds))
         # follow the ball outward from its resting spot
         ref = (bx, by) if not bpts else bpts[-1][1:3]
         gap = 1 if not bpts else max(1.0, (times[k] - bpts[-1][0])/fr)
         lim = 6*d0 if not bpts else 5*d0*gap
         best = None
-        for u, v, dk in cands:
+        for u, v, dk, ds in cands:
             dist = math.hypot(u - ref[0], v - ref[1])
             if dist > lim: continue
-            if best is None or dist < best[0]: best = (dist, u, v, dk)
-        if best: bpts.append((times[k], best[1], best[2], best[3]))
-    # fit a straight 3D line through the resting ball; drop frames that do not fit
-    # (a ball still partly hidden by the head looks too small, i.e. too far)
+            if best is None or dist < best[0]: best = (dist, u, v, dk, ds)
+        if best: bpts.append((times[k], best[1], best[2], best[3], best[4]))
+    # Straight 3D line from the resting ball, fitted in image space: the rest position slides
+    # along its ray (its apparent size at rest is only a soft hint for its depth), plus velocity
+    # and launch time. Frames that do not fit are dropped one at a time (a ball still partly
+    # hidden by the head looks too small, i.e. too far).
+    ray0 = ray(bx, by)
     def fit_line(pts):
         t = np.array([q[0] for q in pts])
         P = np.array([ray(q[1], q[2])*(f*BALL_M/q[3]) for q in pts])
-        w = np.array([(q[3]/d0)**2 for q in pts])    # depth error grows as the ball shrinks
+        w = np.array([(q[3]/d0)**2/q[4]**2 for q in pts])    # depth error grows as the ball shrinks
         best = None
-        # launch: after the ball core first changed (minus slack) and before the ball was seen
+        # start: launch after the ball core first changed (minus slack), before the ball was seen
         for tt0 in np.arange(times[kImp] - 2*fr, t[0], fr/20):
             dt = t - tt0
             if np.any(dt <= 0): continue
@@ -196,12 +203,25 @@ def analyze_rear(frames, times, ball, trig, f, cx, cy, pitch=0.0, club='1W'):
             if best is None or e < best[0]: best = (e, Vc, tt0)
         if best is None: return None
         _, Vc, tt0 = best
+        def resid(p):
+            Z0p, t0p, Vp = p[0], p[1], p[2:5]
+            out = []
+            for q in pts:
+                Pq = ray0*Z0p + Vp*(q[0] - t0p)
+                if Pq[2] < 0.3: return None
+                out += [(f*Pq[0]/Pq[2] + cx - q[1])/0.3, (f*Pq[1]/Pq[2] + cy - q[2])/0.3,
+                        (f*BALL_M/Pq[2] - q[3])/(0.12*q[4])]
+            out.append((Z0p - Z0)/(0.015*Z0))
+            return np.array(out)
+        fit = lm(resid, np.concatenate([[Z0, tt0], Vc]), (1e-4, 1e-6, 1e-3, 1e-3, 1e-3))
+        if fit is None: return None
+        p = fit[0]
         errs = []
         for q in pts:
-            Pq = B3 + Vc*(q[0] - tt0)
+            Pq = ray0*p[0] + p[2:5]*(q[0] - p[1])
             dq = f*BALL_M/Pq[2]; uq = f*Pq[0]/Pq[2] + cx; vq = f*Pq[1]/Pq[2] + cy
-            errs.append(abs(dq - q[3])/0.3 + math.hypot(uq - q[1], vq - q[2])/0.7)
-        return Vc, tt0, errs
+            errs.append(abs(dq - q[3])/(0.3*q[4]) + math.hypot(uq - q[1], vq - q[2])/0.7)
+        return p[2:5], p[1], errs
     cand = [q for q in bpts if q[3] <= 1.05*d0][:10]
     V = None; t0 = times[kImp]
     while len(cand) >= 3:
@@ -209,27 +229,11 @@ def analyze_rear(frames, times, ball, trig, f, cx, cy, pitch=0.0, club='1W'):
         if fl is None: break
         Vc, tt0, errs = fl
         i = int(np.argmax(errs))
-        if errs[i] > 4 and len(cand) > 3:
+        if errs[i] > max(2.5, 2.5*float(np.median(errs))) and len(cand) > 3:
             cand.pop(i); continue
         if errs[i] <= 6:
             V, t0 = Vc, tt0
         break
-    if V is not None:
-        # refine in image space: rest position along its ray, velocity and launch time, with the
-        # ball's apparent size at rest only as a soft hint for its depth
-        ray0 = ray(bx, by)
-        def resid(p):
-            Z0p, t0p, Vp = p[0], p[1], p[2:5]
-            out = []
-            for q in cand:
-                P = ray0*Z0p + Vp*(q[0] - t0p)
-                if P[2] < 0.3: return None
-                out += [(f*P[0]/P[2] + cx - q[1])/0.3, (f*P[1]/P[2] + cy - q[2])/0.3,
-                        (f*BALL_M/P[2] - q[3])/0.12]
-            out.append((Z0p - Z0)/(0.015*Z0))
-            return np.array(out)
-        fit = lm(resid, np.concatenate([[Z0, t0], V]), (1e-4, 1e-6, 1e-3, 1e-3, 1e-3))
-        if fit is not None: V, t0 = fit[0][2:5], fit[0][1]
     if V is not None:
         res['bs'] = float(np.linalg.norm(V))
         res['launch'] = math.degrees(math.asin(max(-1, min(1, V @ up/np.linalg.norm(V)))))

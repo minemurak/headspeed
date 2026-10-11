@@ -19,7 +19,7 @@ def camera(cam, look):
 def render(hs=42.0, bs=62.0, launch=12.0, side_deg=0.0, path_deg=0.0, handed=+1,
            cam_dist=2.6, cam_x=0.0, cam_h=0.6, look=(0.0, 0.45, 2.0), plane=50.0, radius=1.6,
            decel=1.2, W=960, H=540, hfov=70.0, noise=4.0, drop=None, seed=0, exposure=1/1000,
-           flicker=2.0, fps=240.0, body=True):
+           flicker=2.0, fps=240.0, body=True, ball_val=232, sky_val=165):
     """handed=+1 right-handed (golfer on the image left), -1 left-handed.
     plane: swing-plane angle above the ground (deg). decel: relative head-speed loss per second
     going back in time from impact (the head is still speeding up into the ball)."""
@@ -62,7 +62,7 @@ def render(hs=42.0, bs=62.0, launch=12.0, side_deg=0.0, path_deg=0.0, handed=+1,
     yy, xx = np.mgrid[0:H, 0:W].astype(float)
     bg = 100 + 14*np.sin(xx/13.0)*np.cos(yy/19.0) + rng.normal(0, 6, (H, W))
     hor = proj(np.array([0.0, cam_h, 200.0]))[1]
-    bg[yy < hor] = 165 + 10*np.sin(xx[yy < hor]/40.0)
+    bg[yy < hor] = sky_val + 10*np.sin(xx[yy < hor]/40.0)
     bg[(yy > bv + 0.6*d) & (np.abs(xx - bu) < 6*d)] += 15           # mat
     def disc(img, u, v, r, val):
         x0, x1 = int(max(0, u - r - 1)), int(min(W, u + r + 2))
@@ -97,7 +97,7 @@ def render(hs=42.0, bs=62.0, launch=12.0, side_deg=0.0, path_deg=0.0, handed=+1,
                 su, sv, sz = proj(C + np.array([0.0, 0.25, 0.0])); hu, hv, hz = proj(hands(tau))
                 line(img, (su, sv), (hu, hv), f*0.05/hz, 70)
             u, v, z = proj(ball(tau))
-            disc(img, u, v, f*BALL_R/z, 232)
+            disc(img, u, v, f*BALL_R/z, ball_val)
             P, _ = head(tau)          # the head is always nearer the camera than the ball
             if P[2] > cam[2] + 0.3:
                 hu, hv, hz = proj(P); au, av, az = proj(hands(tau))
