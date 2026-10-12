@@ -3,6 +3,8 @@ import SwiftUI
 struct ResultCard: View {
     let result: SwingResult
     var onClose: (() -> Void)? = nil
+    /// Files of this swing's clip to share (empty while they are still being written).
+    var clipFiles: [URL] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -44,6 +46,11 @@ struct ResultCard: View {
 
             ForEach(result.notes, id: \.self) { note in
                 Label(note, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+            }
+            if !clipFiles.isEmpty {
+                ShareLink(items: clipFiles) {
+                    Label("このスイングの映像を書き出す", systemImage: "square.and.arrow.up").font(.caption)
+                }
             }
         }
         .padding(16)
