@@ -627,6 +627,13 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
             if !result.hasMeasurement {
                 result.notes = ["スイングを検出できませんでした。ボールが動いただけの可能性があります。"] + m.notes
             }
+            if !result.hasMeasurement && CameraShake.moved(clip.frames, trigger: clip.triggerIndex) {
+                // Nothing measured and the whole picture shifted: the phone was bumped or picked
+                // up (often while walking over to look at the last result). Not a swing; look
+                // for the ball again, since it may now sit elsewhere in the frame.
+                self.queue.async { self.disarm(resumeAfter: (self.energyTimes.last ?? 0) + 1.0) }
+                return
+            }
             if view == .rear && !result.hasMeasurement
                 && !Self.motionBeforeTrigger(eTimes, eVals, at: clip.times[min(max(clip.triggerIndex, 0), clip.times.count - 1)]) {
                 // Nothing measured and no fast motion before the "hit": the club was set down
