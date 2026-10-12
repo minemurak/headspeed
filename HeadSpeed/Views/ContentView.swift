@@ -86,22 +86,31 @@ struct GuideOverlay: View {
     var body: some View {
         GeometryReader { geo in
             let rect = fitted(geo.size, aspect: engine.frameAspect)
-            let g = CaptureEngine.guide(for: engine.view)
+            let g = engine.pickedPoint.map(CaptureEngine.pickArea) ?? CaptureEngine.guide(for: engine.view)
             let guideRect = CGRect(x: rect.minX + rect.width * CGFloat(g.0), y: rect.minY + rect.height * CGFloat(g.1),
                                    width: rect.width * CGFloat(g.2 - g.0), height: rect.height * CGFloat(g.3 - g.1))
             ZStack {
+                // Tapping a ball measures that one; tapping outside the picture goes back to automatic.
+                Color.clear
+                    .contentShape(Rectangle())
+                    .gesture(SpatialTapGesture().onEnded { v in
+                        let p = v.location
+                        guard rect.width > 0, rect.contains(p) else { engine.pickBall(at: nil); return }
+                        engine.pickBall(at: CGPoint(x: (p.x - rect.minX) / rect.width, y: (p.y - rect.minY) / rect.height))
+                    })
                 Path { $0.addRoundedRect(in: guideRect, cornerSize: CGSize(width: 12, height: 12)) }
                     .stroke(.white.opacity(engine.state == .armed ? 0.15 : 0.45), style: StrokeStyle(lineWidth: 1.5, dash: [8, 6]))
+                    .allowsHitTesting(false)
                 if let b = engine.ballOverlay {
                     let size = max(CGFloat(18), CGFloat(b.d) * rect.width * 1.5)
                     Circle()
                         .stroke(engine.state == .armed ? Color.green : Color.yellow, lineWidth: 3)
                         .frame(width: size, height: size)
                         .position(x: rect.minX + CGFloat(b.x) * rect.width, y: rect.minY + CGFloat(b.y) * rect.height)
+                        .allowsHitTesting(false)
                 }
             }
         }
-        .allowsHitTesting(false)
     }
 
     private func fitted(_ size: CGSize, aspect: Double) -> CGRect {
@@ -155,10 +164,10 @@ struct StatusPill: View {
         if state == .searching {
             switch view {
             case .front: return "正面から、ボールと同じ高さで2〜3m離して固定してください。"
-            case .rear: return "飛球線の真後ろ、ボールから2.5〜3m・腰の高さに固定。ボールが点線枠（画面中央の下寄り）に入るようにしてください。「準備OK」になるまでクラブはボールから離しておきます。"
+            case .rear: return "飛球線の真後ろ、ボールから2.5〜3m・腰の高さに固定。ボールが点線枠（画面中央の下寄り）に入るようにしてください。「準備OK」になるまでクラブはボールから離しておきます。別のボールに丸が付いたら、打つボールをタップしてください。"
             }
         }
-        if state == .armed && view == .rear { return "構えてクラブでボールが隠れても待機を続けます。" }
+        if state == .armed && view == .rear { return "構えてクラブでボールが隠れても待機を続けます。丸が打つボールと違うときは、打つボールをタップしてください。" }
         return nil
     }
 

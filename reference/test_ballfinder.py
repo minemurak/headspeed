@@ -42,5 +42,16 @@ for name, (tu, tv, td) in (('rear_backlit', (947, 777, 35)), ('rear_split', (886
     ok = fix is not None and math.hypot(fix[0] - tu, fix[1] - tv) < 2.5 and abs(fix[2]/td - 1) < 0.08
     print(name, (tu, tv, td), '->', None if fix is None else tuple(round(v, 1) for v in fix), 'OK' if ok else 'FAIL')
     if not ok: failures.append(name)
+# two balls (one on the mat, one left on the auto-tee): a tap picks which one is measured
+# (CaptureEngine.pickArea: +-0.05 wide, +-0.07 high around the tap, ranked by distance to it)
+two = np.asarray(Image.open(f'{__import__("os").path.dirname(__file__) or "."}/fixtures/rear_two_balls.jpg')).astype(float)
+for tap, (tu, tv, td) in (((900, 745), (916.5, 735.0, 30.6)), ((1050, 690), (1053.5, 698.0, 31.6))):
+    px, py = tap[0]/1920, tap[1]/1080
+    area = (max(0, px - 0.05), max(0, py - 0.07), min(1, px + 0.05), min(1, py + 0.07))
+    c = search_rear(two[::2, ::2], area, 14/2, 70/2, (px, py))
+    fix = refine_rear(two, (c[0]*2 + 0.5, c[1]*2 + 0.5, c[2]*2)) if c else None
+    ok = fix is not None and math.hypot(fix[0] - tu, fix[1] - tv) < 2.5 and abs(fix[2]/td - 1) < 0.08
+    print('rear_two_balls tap', tap, (tu, tv, td), '->', None if fix is None else tuple(round(v, 1) for v in fix), 'OK' if ok else 'FAIL')
+    if not ok: failures.append(f'tap{tap}')
 print('OK' if not failures else f'{len(failures)} failed')
 sys.exit(1 if failures else 0)

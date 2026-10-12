@@ -27,11 +27,15 @@ final class CaptureEngine: NSObject, ObservableObject {
     /// swing.mov + swing.json of the last analysed swing, for sharing (see ClipExporter).
     @Published private(set) var lastClip: [URL] = []
     @Published var club: Club = .driver { didSet { lock.lock(); clubValue = club; lock.unlock() } }
+    /// Where the user tapped to say which ball to measure (normalized frame x, y), or nil for
+    /// the automatic choice. Kept across swings, since the next ball goes in the same spot.
+    @Published private(set) var pickedPoint: CGPoint?
     /// Camera position. Changing it drops a locked ball so the next lock uses the new layout.
     @Published var view: CameraView = CaptureEngine.savedView {
         didSet {
             UserDefaults.standard.set(view.rawValue, forKey: Self.viewKey)
-            lock.lock(); viewValue = view; lock.unlock()
+            lock.lock(); viewValue = view; pickValue = nil; lock.unlock()
+            pickedPoint = nil
             queue.async { if self.qState == .armed { self.disarm(resumeAfter: 0) } }
         }
     }
@@ -44,6 +48,25 @@ final class CaptureEngine: NSObject, ObservableObject {
     var onResult: ((SwingResult) -> Void)?
 
     /// Guide area where the ball must be placed (x0, y0, x1, y1), normalized.
+    /// Search area around a tapped point: about three ball widths each way at the usual distance.
+    static func pickArea(_ p: CGPoint) -> (Double, Double, Double, Double) {
+        (max(0, Double(p.x) - 0.05), max(0, Double(p.y) - 0.07), min(1, Double(p.x) + 0.05), min(1, Double(p.y) + 0.07))
+    }
+
+    /// Main thread. Measures the ball nearest `p` (normalized frame coordinates) from now on;
+    /// nil goes back to the automatic choice. A locked ball is dropped so the search reruns.
+    func pickBall(at p: CGPoint?) {
+        pickedPoint = p
+        lock.lock(); pickValue = p.map { (Double($0.x), Double($0.y)) }; lock.unlock()
+        queue.async {
+            switch self.qState {
+            case .armed: self.disarm(resumeAfter: 0)
+            case .searching: self.candidate = nil; self.stableCount = 0
+            default: break
+            }
+        }
+    }
+
     static func guide(for view: CameraView) -> (Double, Double, Double, Double) {
         switch view {
         case .front: return (0.15, 0.30, 0.85, 0.97)
@@ -58,6 +81,7 @@ final class CaptureEngine: NSObject, ObservableObject {
     private let lock = NSLock()
     private var clubValue: Club = .driver
     private var viewValue: CameraView = CaptureEngine.savedView
+    private var pickValue: (Double, Double)?
     private var device: AVCaptureDevice?
     private let motion = CMMotionManager()
     private var configured = false
@@ -320,7 +344,7 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
     // MARK: Ball search
 
     private func searchBall(_ y: UnsafePointer<UInt8>, W: Int, H: Int, bpr: Int, t: Double) {
-        lock.lock(); let rear = viewValue == .rear; lock.unlock()
+        lock.lock(); let rear = viewValue == .rear; let pick = pickValue; lock.unlock()
         // Rear: the ball's outline is searched on a half-size frame (a quarter is too coarse
         // for a ~30 px ball's edges); face-on keeps the quarter-size bright-blob search.
         let f = rear ? 2 : 4
@@ -331,9 +355,12 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
             for sx in 0..<sw { small[sy * sw + sx] = row[sx * f] }
         }
         let img = GrayImage(width: sw, height: sh, pixels: small)
+        // A tapped point narrows the search to the area around it (another ball nearby, such
+        // as one left on the auto-tee next to the mat, is otherwise a valid pick too).
+        let area = pick.map { Self.pickArea(CGPoint(x: $0.0, y: $0.1)) }
         let found = rear
-            ? BallFinder.searchRear(img, guide: Self.guide(for: .rear), minD: 14.0 / Double(f), maxD: 70.0 / Double(f), anchor: (0.5, 0.75))
-            : BallFinder.search(img, guide: Self.guide(for: .front), minD: 12.0 / Double(f), maxD: 110.0 / Double(f))
+            ? BallFinder.searchRear(img, guide: area ?? Self.guide(for: .rear), minD: 14.0 / Double(f), maxD: 70.0 / Double(f), anchor: pick ?? (0.5, 0.75))
+            : BallFinder.search(img, guide: area ?? Self.guide(for: .front), minD: 12.0 / Double(f), maxD: 110.0 / Double(f))
         guard let coarse = found else {
             candidate = nil; stableCount = 0
             publishBall(nil)
