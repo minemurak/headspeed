@@ -77,6 +77,11 @@ final class CaptureEngine: NSObject, ObservableObject {
     private var coreIdx: [Int] = []          // full-res offsets (y * bytesPerRow + x)
     private var coreRef: [Double] = []
     private var overCount = 0
+    // Rear: the club set down behind the ball at address hides it from the camera.
+    private var recentDiffs: [Double] = []   // ball-patch change over the last 3 frames
+    private var covered = false
+    private var coveredSince = 0.0
+    private var clearCount = 0
     private var firstOverIndex = 0
     private var triggerIndex = 0
     private var postRemaining = 0
@@ -398,6 +403,9 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
         }
         armedBall = fix
         overCount = 0
+        recentDiffs = []
+        covered = false
+        clearCount = 0
         setExposureLocked(true)
         if let s = device?.exposureDuration.seconds, s.isFinite, s > 0 {
             armedShutter = s
@@ -429,8 +437,38 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
         var sum = 0.0
         for (j, i) in coreIdx.enumerated() { sum += abs(Double(y[i]) - coreRef[j]) }
         let diff = sum / Double(coreIdx.count)
-        if diff > 18 {
-            if overCount == 0 { firstOverIndex = ring.total - 1 }
+        let threshold = 18.0
+        let rear = armedView == .rear
+        defer {
+            recentDiffs.append(diff)
+            if recentDiffs.count > 3 { recentDiffs.removeFirst() }
+        }
+
+        if covered {
+            // Wait for the ball to show again (the takeaway) before watching for the hit.
+            clearCount = diff < threshold * 0.5 ? clearCount + 1 : 0
+            if clearCount >= 12 {
+                covered = false
+                clearCount = 0
+            } else if t - coveredSince > 20 {
+                // Hidden for too long: the ball was probably moved. Look for it again.
+                disarm(resumeAfter: t)
+            }
+            return
+        }
+
+        if diff > threshold {
+            if overCount == 0 {
+                firstOverIndex = ring.total - 1
+                // From behind, a club soled behind the ball at address covers it over many
+                // frames; a hit changes the patch within a frame or two.
+                if rear, recentDiffs.count == 3, recentDiffs[0] >= threshold * 0.5 {
+                    covered = true
+                    coveredSince = t
+                    clearCount = 0
+                    return
+                }
+            }
             overCount += 1
             if overCount >= 2 {
                 if ring.total < 150 {
@@ -445,8 +483,11 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
             }
         } else {
             overCount = 0
-            // Follow slow lighting changes (clouds) while waiting.
-            for (j, i) in coreIdx.enumerated() { coreRef[j] = coreRef[j] * 0.98 + Double(y[i]) * 0.02 }
+            // Follow slow lighting changes (clouds) while waiting; from behind, not while a
+            // club is creeping over the ball.
+            if !rear || diff < threshold * 0.5 {
+                for (j, i) in coreIdx.enumerated() { coreRef[j] = coreRef[j] * 0.98 + Double(y[i]) * 0.02 }
+            }
         }
     }
 
