@@ -27,6 +27,8 @@ def main(mov, meta):
                       pitch=math.degrees(info['cameraPitch']))
     print('frames', len(frames), f'{frames[0].shape[1]}x{frames[0].shape[0]}',
           'fps %.1f' % (1/np.median(np.diff(times))), 'trigger', info['triggerIndex'], 'ball', ball)
+    from shake import camera_moved
+    print('camera moved at the trigger:', camera_moved(frames, info['triggerIndex']))
     print('app      ', {k: info.get(k) for k in ('headSpeed', 'ballSpeed', 'launch', 'attack', 'notes')})
     print('reference', {k: v for k, v in res.items() if not isinstance(v, (list, np.ndarray)) or k == 'notes'})
 

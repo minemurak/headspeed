@@ -164,6 +164,7 @@ def analyze_rear(frames, times, ball, trig, f, cx, cy, pitch=0.0, club='1W'):
             sub = np.clip(sub, -0.5, 1.2)
             sub[rest[y0:y1, x0:x1]] = 0
             S = sub.sum()
+            if S <= 0 or np.maximum(sub, 0).sum() <= 0: continue
             dk = 2*math.sqrt(S/math.pi)
             if dk > 1.1*d0: continue
             sp = np.maximum(sub, 0); Sp = sp.sum()

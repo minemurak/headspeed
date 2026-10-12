@@ -57,3 +57,5 @@ jobs:
         working-directory: reference
       - run: python test_ballfinder.py
         working-directory: reference
+      - run: python test_shake.py
+        working-directory: reference
