@@ -155,9 +155,10 @@ struct StatusPill: View {
         if state == .searching {
             switch view {
             case .front: return "正面から、ボールと同じ高さで2〜3m離して固定してください。"
-            case .rear: return "飛球線の真後ろ、ボールから2.5〜3m・腰の高さに固定。ボールが点線枠（画面中央の下寄り）に入るようにしてください。"
+            case .rear: return "飛球線の真後ろ、ボールから2.5〜3m・腰の高さに固定。ボールが点線枠（画面中央の下寄り）に入るようにしてください。「準備OK」になるまでクラブはボールから離しておきます。"
             }
         }
+        if state == .armed && view == .rear { return "構えてクラブでボールが隠れても待機を続けます。" }
         return nil
     }
 
