@@ -54,7 +54,7 @@ struct ContentView: View {
                     .foregroundStyle(.white.opacity(0.7))
                     Spacer()
                     if let result {
-                        ResultCard(result: result)
+                        ResultCard(result: result, onClose: { self.result = nil })
                             .transition(.move(edge: .trailing).combined(with: .opacity))
                     }
                 }
