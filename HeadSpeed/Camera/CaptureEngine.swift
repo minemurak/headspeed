@@ -84,6 +84,7 @@ final class CaptureEngine: NSObject, ObservableObject {
     private var covered = false
     private var coveredSince = 0.0
     private var clearCount = 0
+    private var coveredFrames = 0
     private var firstOverIndex = 0
     private var triggerIndex = 0
     private var postRemaining = 0
@@ -441,12 +442,21 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
         let diff = sum / Double(coreIdx.count)
         let threshold = 18.0
         let rear = armedView == .rear
+        let prev = recentDiffs.last
         defer {
             recentDiffs.append(diff)
             if recentDiffs.count > 3 { recentDiffs.removeFirst() }
         }
 
         if covered {
+            coveredFrames += 1
+            // Just after a cover began, a big one-frame jump is the clubhead arriving at
+            // impact after all (it can graze the ball patch a frame early).
+            if coveredFrames <= 3, let p = prev, diff - p >= threshold, ring.total >= 150 {
+                covered = false
+                startAnalysis()
+                return
+            }
             // Wait for the ball to show again (the takeaway) before watching for the hit.
             clearCount = diff < threshold * 0.5 ? clearCount + 1 : 0
             if clearCount >= 12 {
@@ -462,12 +472,10 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
         if diff > threshold {
             if overCount == 0 {
                 firstOverIndex = ring.total - 1
-                // From behind, a club soled behind the ball at address covers it over many
-                // frames; a hit changes the patch within a frame or two.
-                if rear, recentDiffs.count == 3, recentDiffs[0] >= threshold * 0.5 {
-                    covered = true
-                    coveredSince = t
-                    clearCount = 0
+                // From behind, a club set down behind the ball at address slides over it in
+                // several frames; at impact the patch changes by a lot in a single frame.
+                if rear, let p = prev, diff - p < threshold {
+                    markCovered(t)
                     return
                 }
             }
@@ -478,10 +486,7 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
                     disarm(resumeAfter: t + 0.5)
                     return
                 }
-                triggerIndex = firstOverIndex
-                postRemaining = 40          // keep ~0.17 s after impact for the ball flight
-                qState = .analyzing
-                publishState(.analyzing)
+                startAnalysis()
             }
         } else {
             overCount = 0
@@ -491,6 +496,46 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
                 for (j, i) in coreIdx.enumerated() { coreRef[j] = coreRef[j] * 0.98 + Double(y[i]) * 0.02 }
             }
         }
+    }
+
+    /// Whether the whole picture moved fast just before `t` (a downswing), compared with
+    /// the second or two before: a clubhead at 30–50 m/s changes far more of the frame
+    /// than setting the club down does.
+    private static func motionBeforeTrigger(_ times: [Double], _ energy: [Double], at t: Double) -> Bool {
+        var recent: [Double] = [], before: [Double] = []
+        for (ti, e) in zip(times, energy) {
+            if ti > t - 0.3 && ti <= t + 0.01 { recent.append(e) }
+            else if ti > t - 2.3 && ti <= t - 0.3 { before.append(e) }
+        }
+        guard let peak = recent.max(), before.count >= 60 else { return true }   // unknown: treat as a swing
+        let base = before.sorted()[before.count / 2]
+        return peak > 3 * base + 2
+    }
+
+    private func markCovered(_ t: Double) {
+        covered = true
+        coveredSince = t
+        coveredFrames = 0
+        clearCount = 0
+        overCount = 0
+    }
+
+    private func startAnalysis() {
+        triggerIndex = firstOverIndex
+        postRemaining = 40          // keep ~0.17 s after impact for the ball flight
+        qState = .analyzing
+        publishState(.analyzing)
+    }
+
+    /// Rear view: the "hit" was the club set down over the ball, not a swing. Go back to
+    /// waiting with the same ball, as if the cover had been recognised at once.
+    private func resumeCovered(_ t: Double) {
+        guard armedBall != nil, strip != nil else { disarm(resumeAfter: t); return }
+        postRemaining = 0
+        recentDiffs = []
+        markCovered(t)
+        qState = .armed
+        publishState(.armed)
     }
 
     private func disarm(resumeAfter: Double) {
@@ -554,6 +599,13 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
             result.notes = m.notes
             if !result.hasMeasurement {
                 result.notes = ["スイングを検出できませんでした。ボールが動いただけの可能性があります。"] + m.notes
+            }
+            if view == .rear && !result.hasMeasurement
+                && !Self.motionBeforeTrigger(eTimes, eVals, at: clip.times[min(max(clip.triggerIndex, 0), clip.times.count - 1)]) {
+                // Nothing measured and no fast motion before the "hit": the club was set down
+                // over the ball at address. Keep waiting instead of reporting a failed swing.
+                self.queue.async { self.resumeCovered(self.energyTimes.last ?? 0) }
+                return
             }
             DispatchQueue.main.async {
                 self.lastClip = []
