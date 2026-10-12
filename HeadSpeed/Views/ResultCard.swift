@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ResultCard: View {
     let result: SwingResult
+    var onClose: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -48,6 +49,20 @@ struct ResultCard: View {
         .padding(16)
         .frame(width: 380)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(alignment: .topTrailing) {
+            if let onClose {
+                Button(action: onClose) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title2)
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .offset(x: 12, y: -12)
+                .accessibilityLabel("結果を閉じる")
+            }
+        }
     }
 
     private func metric(_ label: String, _ value: String?) -> some View {
