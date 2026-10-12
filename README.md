@@ -111,6 +111,7 @@ reference/
   tempo.py     テンポ推定の参照実装
   test.py      合成映像での精度テスト（python3 test.py、numpy が必要）
   sim_rear.py / analyzer_rear.py / test_rear.py  後方モードの合成映像・参照実装・精度テスト
+  replay.py  アプリで書き出したスイング（swing.mov + swing.json）を参照実装で解析し直す（ffmpeg が必要）
   ballfinder.py / test_ballfinder.py  静止ボール検出の参照実装（後方モード）とテスト（pillow も必要。fixtures/ は実機の打席で撮った画面）
 ```
 

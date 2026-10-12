@@ -24,6 +24,8 @@ final class CaptureEngine: NSObject, ObservableObject {
     @Published private(set) var shutterLabel = ""
     @Published private(set) var shutterTooSlow = false
     @Published private(set) var ballTooSmall = false
+    /// swing.mov + swing.json of the last analysed swing, for sharing (see ClipExporter).
+    @Published private(set) var lastClip: [URL] = []
     @Published var club: Club = .driver { didSet { lock.lock(); clubValue = club; lock.unlock() } }
     /// Camera position. Changing it drops a locked ball so the next lock uses the new layout.
     @Published var view: CameraView = CaptureEngine.savedView {
@@ -553,7 +555,13 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
             if !result.hasMeasurement {
                 result.notes = ["スイングを検出できませんでした。ボールが動いただけの可能性があります。"] + m.notes
             }
-            DispatchQueue.main.async { self.onResult?(result) }
+            DispatchQueue.main.async {
+                self.lastClip = []
+                self.onResult?(result)
+            }
+            // After the result is shown: encoding takes a second or two.
+            let files = ClipExporter.export(clip, club: club, result: result) ?? []
+            DispatchQueue.main.async { self.lastClip = files }
             self.queue.async {
                 // Give the ball time to leave and the golfer time to settle.
                 let now = self.energyTimes.last ?? 0
