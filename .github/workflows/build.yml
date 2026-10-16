@@ -67,3 +67,5 @@ jobs:
         working-directory: reference
       - run: python test_front_hosel.py
         working-directory: reference
+      - run: python test_front_static.py
+        working-directory: reference
