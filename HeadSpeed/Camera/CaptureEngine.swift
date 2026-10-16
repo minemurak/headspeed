@@ -505,6 +505,13 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
                     markCovered(t)
                     return
                 }
+                // Face-on: at address the clubhead's shadow falls on the ball, and the takeaway
+                // lifts it again; the patch drifts over many frames. The hit changes it at once.
+                // A slow crossing is taken as the new look of the ball at rest.
+                if !rear, recentDiffs.count == 3, diff - recentDiffs[0] < threshold * 0.5 {
+                    for (j, i) in coreIdx.enumerated() { coreRef[j] = Double(y[i]) }
+                    return
+                }
             }
             overCount += 1
             if overCount >= 2 {
