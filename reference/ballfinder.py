@@ -28,6 +28,23 @@ def search(img, guide, minD, maxD):
     mask = np.zeros_like(img, bool); mask[gy0:gy1, gx0:gx1] = g >= thr
     return pick(img, mask, minD, maxD)
 
+def refine(img, approx):
+    """Face-on refine (BallFinder.refine): the bright blob at a threshold halfway between the
+    ball's middle and its surroundings, which must be round and compact."""
+    cx, cy, d = approx
+    inside = mean_in(img, cx, cy, 0, d*0.3); ring = mean_in(img, cx, cy, d*0.9, d*1.4)
+    if inside - ring < 30: return None
+    H, W = img.shape
+    yy, xx = np.mgrid[0:H, 0:W]
+    mask = ((xx - cx)**2 + (yy - cy)**2 < d*d) & (img > (inside + ring)/2)
+    cs = components(mask)
+    if not cs: return None
+    b = max(cs, key=lambda c: c['area'])
+    if b['area'] <= 20: return None
+    bw = b['maxx'] - b['minx'] + 1; bh = b['maxy'] - b['miny'] + 1
+    if max(bw, bh)/min(bw, bh) > 1.3 or b['area']/(bw*bh) < 0.6: return None
+    return b['sx']/b['area'], b['sy']/b['area'], 2*math.sqrt(b['area']/math.pi)
+
 def pick(img, mask, minD, maxD):
     best = None
     for b in components(mask):
@@ -41,6 +58,69 @@ def pick(img, mask, minD, maxD):
         score = contrast*b['area']/(bw*bh)
         if best is None or score > best[1]: best = ((cx, cy, d), score)
     return best[0] if best else None
+
+
+def integral(img):
+    H, W = img.shape
+    I = np.zeros((H + 1, W + 1)); I[1:, 1:] = img.astype(float).cumsum(0).cumsum(1); return I
+
+def box(I, x, y, h):
+    H, W = I.shape[0] - 1, I.shape[1] - 1
+    x0, x1 = max(0, x - h), min(W, x + h + 1); y0, y1 = max(0, y - h), min(H, y + h + 1)
+    return I[y1, x1] - I[y0, x1] - I[y1, x0] + I[y0, x0], (x1 - x0)*(y1 - y0)
+
+
+# ---- face-on fallback
+
+def search_lit(img, guide, minD, maxD, anchor=None):
+    """Fallback when the ball is only partly lit (sun from behind, the far half in its own
+    shade, on sunlit grass as bright as that shade): centre-surround brightness, so the lit
+    part still stands out on average, then a shape check so a white shoe does not pass."""
+    H, W = img.shape
+    gx0, gx1 = max(0, int(guide[0]*W)), min(W, int(guide[2]*W))
+    gy0, gy1 = max(0, int(guide[1]*H)), min(H, int(guide[3]*H))
+    I = integral(img)
+    cands = []
+    for r in range(max(2, int(minD/2)), int(maxD/2) + 1):
+        hi, hr, ho = max(1, int(0.6*r + 0.5)), int(1.25*r + 0.5), 2*r   # rounded half up, as in Swift
+        sc = np.full((gy1 - gy0, gx1 - gx0), -1e9)
+        for y in range(gy0, gy1):
+            for x in range(gx0, gx1):
+                si, ni = box(I, x, y, hi); sm, nm = box(I, x, y, hr); so, no = box(I, x, y, ho)
+                if no - nm <= 0: continue
+                sc[y - gy0, x - gx0] = si/ni - (so - sm)/(no - nm)
+        for y, x in np.argwhere(sc >= 60):
+            if sc[y, x] < sc[max(0, y-1):y+2, max(0, x-1):x+2].max(): continue
+            cands.append((float(sc[y, x]), x + gx0, y + gy0, r))
+    cands.sort(reverse=True)
+    valid = []
+    for s, x, y, r in cands[:40]:
+        w = int(math.ceil(2.5*r))
+        x0, x1, y0, y1 = max(0, x - w), min(W, x + w + 1), max(0, y - w), min(H, y + w + 1)
+        win = img[y0:y1, x0:x1]
+        inner = mean_in(img, x, y, 0, 0.6*r); ring = mean_in(img, x, y, 1.25*r, 2.0*r)
+        m = win >= (inner + ring)/2
+        hit = None
+        for c in components(m):
+            if c['minx'] <= x - x0 <= c['maxx'] and c['miny'] <= y - y0 <= c['maxy']:
+                if hit is None or c['area'] > hit['area']: hit = c
+        if hit is None: continue
+        bw = hit['maxx'] - hit['minx'] + 1; bh = hit['maxy'] - hit['miny'] + 1
+        # compact and on its own: not touching the window (a shoe or a leg runs on)
+        if hit['minx'] == 0 or hit['miny'] == 0 or hit['maxx'] == x1 - x0 - 1 or hit['maxy'] == y1 - y0 - 1: continue
+        if max(bw, bh)/min(bw, bh) > 1.6 or hit['area']/(bw*bh) < 0.4: continue
+        d = max(bw, bh)
+        if not (minD <= d <= maxD): continue
+        valid.append((s, float(x0 + hit['sx']/hit['area']), float(y0 + hit['sy']/hit['area']), float(d)))
+    if not valid: return None
+    if anchor is not None:
+        s, x, y, d = max(valid, key=lambda v: v[0]/(1 + 3*math.hypot(v[1]/W - anchor[0], v[2]/H - anchor[1])))
+    else:
+        # face-on, the ball lies in front of the feet: of the strong candidates, the lowest
+        # (a white shoe toe is about as bright and compact)
+        top = max(v[0] for v in valid)
+        s, x, y, d = max((v for v in valid if v[0] >= 0.8*top), key=lambda v: v[2])
+    return x, y, d
 
 
 # ---- rear view: the ball sits on a tee, often in front of a split background (dark field
@@ -108,9 +188,10 @@ def bilinear(img, x, y):
     fx, fy = x - x0, y - y0
     return ((1-fx)*(1-fy)*img[y0, x0] + fx*(1-fy)*img[y0, x0+1] + (1-fx)*fy*img[y0+1, x0] + fx*fy*img[y0+1, x0+1])
 
-def refine_rear(img, approx):
+def refine_rear(img, approx, strong=None, minpts=12):
     """Sub-pixel circle: on rays from the approximate centre (tee side skipped), the strongest
-    radial edge with a parabolic peak, then a least-squares circle with outlier rejection."""
+    radial edge with a parabolic peak, then a least-squares circle with outlier rejection.
+    strong: keep only rays whose edge is at least this share of the strongest one."""
     cx0, cy0, d0 = approx
     rs = np.arange(0.2*d0, 0.85*d0, 0.5)
     pts = []
@@ -125,9 +206,11 @@ def refine_rear(img, approx):
         den = g[i-1] - 2*g[i] + g[i+1]
         off = 0.5*(g[i-1] - g[i+1])/den if den < 0 else 0.0
         rr = rs[i] + 0.5*off
-        pts.append((cx0 + ux*rr, cy0 + uy*rr))
-    if len(pts) < 12: return None
-    P = np.array(pts)
+        pts.append((cx0 + ux*rr, cy0 + uy*rr, g[i]))
+    if strong is not None and pts:
+        gmax = max(p[2] for p in pts); pts = [p for p in pts if p[2] >= strong*gmax]
+    if len(pts) < minpts: return None
+    P = np.array([p[:2] for p in pts])
     keep = np.ones(len(P), bool)
     for _ in range(3):
         Q = P[keep]
@@ -136,6 +219,16 @@ def refine_rear(img, approx):
         cx, cy = sol[0], sol[1]; rad = math.sqrt(max(1e-9, sol[2] + cx*cx + cy*cy))
         res = np.abs(np.hypot(P[:, 0] - cx, P[:, 1] - cy) - rad)
         keep = res <= max(0.6, 2.5*float(np.median(res[keep])))
-        if keep.sum() < 12: return None
+        if keep.sum() < minpts: return None
     if np.median(res[keep]) > 0.04*rad + 0.3 or not (0.7*d0 < 2*rad < 1.3*d0): return None
     return cx, cy, 2*rad
+
+def refine_lit(img, approx):
+    """Face-on fallback refine. Only the lit arc has a real outline (the shaded side's edge is
+    lost in the grass texture), so fit the circle to the strong radial edges alone; the lit
+    part only hints at the size, so start from a few diameters."""
+    for k in (1.0, 1.25, 0.8):
+        r = refine_rear(img, (approx[0], approx[1], k*approx[2]), strong=0.5, minpts=8)
+        if r: return r
+    return None
+
