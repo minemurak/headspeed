@@ -35,6 +35,17 @@ struct HistoryView: View {
                             stat("初速", Fmt.num(r.ballSpeed, 1))
                             stat("ミート率", Fmt.num(r.smash, 2))
                             stat("打出", r.launch.map { "\(Fmt.num($0, 1))°" } ?? "—")
+                            let files = SwingArchive.files(r.id)
+                            if files.isEmpty {
+                                Color.clear.frame(width: 36)
+                            } else {
+                                ShareLink(items: files) {
+                                    Image(systemName: files.count > 1 ? "film" : "doc.text")
+                                }
+                                .buttonStyle(.borderless)
+                                .frame(width: 36)
+                                .accessibilityLabel("このスイングを書き出す")
+                            }
                         }
                     }
                     .onDelete(perform: store.remove)
@@ -45,7 +56,17 @@ struct HistoryView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() } }
                 ToolbarItemGroup(placement: .primaryAction) {
-                    ShareLink(item: csvFile, preview: SharePreview("ヘッドスピード履歴.csv")) {
+                    Menu {
+                        ShareLink(item: csvFile, preview: SharePreview("ヘッドスピード履歴.csv")) {
+                            Label("履歴をCSVで書き出す", systemImage: "tablecells")
+                        }
+                        let jsons = allJSON
+                        if !jsons.isEmpty {
+                            ShareLink(items: jsons) {
+                                Label("全スイングのJSONを書き出す（\(jsons.count)件）", systemImage: "doc.on.doc")
+                            }
+                        }
+                    } label: {
                         Image(systemName: "square.and.arrow.up")
                     }
                     Button(role: .destructive) { confirmClear = true } label: { Image(systemName: "trash") }
@@ -64,6 +85,10 @@ struct HistoryView: View {
             Text(value).font(.callout.monospacedDigit())
         }
         .frame(width: 64, alignment: .trailing)
+    }
+
+    private var allJSON: [URL] {
+        store.results.flatMap { SwingArchive.files($0.id).filter { $0.pathExtension.lowercased() == "json" } }
     }
 
     /// UTF-8 with BOM and CRLF so Excel opens it correctly.
