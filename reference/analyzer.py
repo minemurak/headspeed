@@ -35,6 +35,15 @@ def open_mask(m, k):
     e = run(run(m, 0, np.all), 1, np.all)
     return run(run(e, 0, np.any), 1, np.any)
 
+def dilate_mask(m, k):
+    """Binary dilation with a k x k square."""
+    from numpy.lib.stride_tricks import sliding_window_view as sw
+    p = k//2
+    def run(a, axis):
+        pad = np.pad(a, [(p, p) if i == axis else (0, 0) for i in range(2)], constant_values=False)
+        return sw(pad, k, axis=axis).any(axis=-1)
+    return run(run(m, 0), 1)
+
 def linfit(t, v):
     t = np.asarray(t, float); v = np.asarray(v, float)
     tm = t.mean(); vm = v.mean()
@@ -65,6 +74,59 @@ def silhouette(F, Bg, ball, trig):
     w = hit['maxx'] - hit['minx'] + 1
     if not (0.5*d <= w <= 2.5*d): return None
     return x0 + (hit['minx'] + hit['maxx'])/2, y0 + hit['miny'] + w/2, float(w)
+
+def head_match(F, Bg, times, ball, band, kImp, direction, shaft):
+    """Head displacement between consecutive frames shortly before contact, by matching the head's
+    own pixels (the moving region within a head's length of its front) in the next frame. Uses the
+    whole head, so the hosel and shaft that lead the face no longer set the speed, as they can
+    for a single leading-edge column. Returns [(t_mid, vx, vy)] in px/s."""
+    H, W = Bg.shape
+    bx, by, d = ball
+    y0, y1 = band
+    out = []
+    yy, xx = np.mgrid[0:H, 0:W]
+    rest = ((xx - bx)**2 + (yy - by)**2) < (0.75*d)**2
+    # pairs ending two frames before contact: in the frame just before it the head's front is
+    # already at the ball, and the front is what pins a plain head's position
+    for k in range(max(1, kImp - 4), kImp - 2):
+        m = np.zeros((H, W), bool)
+        m[y0:y1] = (np.abs(F[k][y0:y1] - Bg[y0:y1]) > 28) & (np.abs(F[k][y0:y1] - F[k-1][y0:y1]) > 28)
+        m &= ~rest
+        m = open_mask(m, shaft)
+        cs = [c for c in components(m) if c['area'] >= 0.3*d*d]
+        if not cs: continue
+        # the head: everything moving within a head's length of the front-most part
+        if direction > 0:
+            front = max(c['maxx'] for c in cs); x0, x1 = int(front - 3*d), front + 1
+        else:
+            front = min(c['minx'] for c in cs); x0, x1 = front, int(front + 3*d) + 1
+        hm = np.zeros_like(m); hm[:, max(0, x0):min(W, x1)] = m[:, max(0, x0):min(W, x1)]
+        if hm.sum() < 0.3*d*d: continue
+        # with a margin of background round it, so a plain (untextured) head is pinned by its
+        # outline; compared as differences from the background, which is ~0 off the head
+        ys, xs = np.nonzero(dilate_mask(hm, max(3, int(0.6*d) | 1)) & ~rest)
+        vals = (F[k][ys, xs] - Bg[ys, xs]).astype(float); nxt = F[k + 1] - Bg
+        def cost(dx, dy):
+            X = xs + dx; Y = ys + dy
+            ok = (X >= 0) & (X < W) & (Y >= 0) & (Y < H)
+            ok[ok] = ~rest[Y[ok], X[ok]]          # the ball (bright, then hit) is not the head's
+            if ok.mean() < 0.6: return None
+            return float(np.abs(nxt[Y[ok], X[ok]] - vals[ok]).mean())
+        best = None
+        r = int(1.5*d)
+        for dy in range(-r, r + 1, 2):            # coarse, then refine around the best
+            for a in range(int(0.5*d), int(8*d), 2):
+                c0 = cost(direction*a, dy)
+                if c0 is not None and (best is None or c0 < best[0]): best = (c0, direction*a, dy)
+        if best is None: continue
+        bdx, bdy = best[1], best[2]
+        for dy in range(bdy - 2, bdy + 3):
+            for dx in range(bdx - 2, bdx + 3):
+                c0 = cost(dx, dy)
+                if c0 is not None and c0 < best[0]: best = (c0, dx, dy)
+        dt = times[k + 1] - times[k]
+        out.append(((times[k] + times[k + 1])/2, best[1]/dt, best[2]/dt))
+    return out
 
 def analyze(frames, times, ball, trig, club='1W', energy=None, pitch=0.0):
     # pitch: degrees the camera looks down (face-on from above); image vertical motion is
@@ -144,12 +206,23 @@ def analyze(frames, times, ball, trig, club='1W', energy=None, pitch=0.0):
         vy = max(-abs(vx)*0.27, min(abs(vx)*0.27, vy))
         res['headPxS'] = math.hypot(vx, vy)
         res['hs'] = res['headPxS']*mmpx/1000
-        chord = math.degrees(math.atan2(-vy, abs(vx)))
-        # the fitted line is a chord of the swing arc: rotate to the tangent at contact
         e_contact = bx - direction*0.5*d
         e_fit_b = np.mean([p[1] for p in clean]) - vx*np.mean(t)
         tContact = (e_contact - e_fit_b)/vx
         tMid = float(np.mean(t))
+        # the head's whole-body displacement over the last frames, when it agrees roughly
+        hm = head_match(F, Bg, times, (bx, by, d), (y0, y1), kImp, direction, shaft)
+        if hm:
+            mvx = float(np.mean([h[1] for h in hm])); mvy = float(np.mean([h[2] for h in hm]))*ycorr
+            if 0.6 <= mvx/vx <= 2.0:
+                # the whole velocity along the arc (a few frames out it still dips noticeably)
+                vx, vy = mvx, max(-abs(mvx)*0.6, min(abs(mvx)*0.6, mvy))
+                tMid = float(np.mean([h[0] for h in hm]))
+                res['headPxS'] = math.hypot(vx, vy)
+                res['hs'] = res['headPxS']*mmpx/1000
+                res['headMatched'] = len(hm)
+        chord = math.degrees(math.atan2(-vy, abs(vx)))
+        # the fitted line is a chord of the swing arc: rotate to the tangent at contact
         R = CLUB_RADIUS_M.get(club, 1.5)
         res['attack'] = chord + math.degrees((res['hs']/R)*(tContact - tMid))
         res['headFrames'] = len(clean)
