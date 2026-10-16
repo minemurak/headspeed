@@ -119,8 +119,9 @@ enum BallFinder {
             for i in 0..<acc.count { acc[i] = 0; a3[i] = 0 }
             for k in 0..<ex.count {
                 for s in [1.0, -1.0] {
-                    let cx = Int((Double(ex[k]) + s * r * nx[k]).rounded()) - gx0
-                    let cy = Int((Double(ey[k]) + s * r * ny[k]).rounded()) - gy0
+                    // half to even, as the reference (r steps by halves, so exact halves are common)
+                    let cx = Int((Double(ex[k]) + s * r * nx[k]).rounded(.toNearestOrEven)) - gx0
+                    let cy = Int((Double(ey[k]) + s * r * ny[k]).rounded(.toNearestOrEven)) - gy0
                     if cx >= 0, cx < gw, cy >= 0, cy < gh { acc[cy * gw + cx] += 1 }
                 }
             }
@@ -168,7 +169,7 @@ enum BallFinder {
             let ux = cos(a), uy = sin(a)
             n += 1
             for dr in [0.0, -1, 1, -1.5, 1.5] {
-                let x = Int((cx + ux * (r + dr)).rounded()), y = Int((cy + uy * (r + dr)).rounded())
+                let x = Int((cx + ux * (r + dr)).rounded(.toNearestOrEven)), y = Int((cy + uy * (r + dr)).rounded(.toNearestOrEven))
                 guard x >= 0, x < W, y >= 0, y < H else { continue }
                 let i = y * W + x, m = mag[i]
                 if m >= edgeMin && abs(gx[i] * ux + gy[i] * uy) >= 0.93 * m { hit += 1; break }
