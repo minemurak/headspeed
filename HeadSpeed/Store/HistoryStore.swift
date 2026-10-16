@@ -25,12 +25,14 @@ final class HistoryStore: ObservableObject {
     }
 
     func remove(at offsets: IndexSet) {
+        for i in offsets { SwingArchive.remove(results[i].id) }
         results.remove(atOffsets: offsets)
         save()
     }
 
     func removeAll() {
         results = []
+        SwingArchive.removeAll()
         save()
     }
 

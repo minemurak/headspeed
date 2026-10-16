@@ -654,6 +654,8 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
             }
             // After the result is shown: encoding takes a second or two.
             let files = ClipExporter.export(clip, club: club, result: result) ?? []
+            // HistoryStore keeps only measured swings; keep their files alongside.
+            if result.hasMeasurement { SwingArchive.store(files, id: result.id, date: result.date) }
             DispatchQueue.main.async { self.lastClip = files }
             self.queue.async {
                 // Give the ball time to leave and the golfer time to settle.
