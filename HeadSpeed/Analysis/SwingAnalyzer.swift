@@ -91,14 +91,16 @@ enum SwingAnalyzer {
         let minCnt = max(2, Int((0.2 * d).rounded(.toNearestOrEven)))
         var direction: Int?
         var pts: [(t: Double, e: Double, y: Double)] = []
-        for k in max(0, kImp - 6)..<kImp {
-            let px = clip.frames[k].pixels
+        for k in max(1, kImp - 6)..<kImp {
+            let px = clip.frames[k].pixels, prev = clip.frames[k - 1].pixels
             var cnt = [Int](repeating: 0, count: W)
             var band = [Bool](repeating: false, count: (y1 - y0) * W)
             for y in y0..<y1 {
                 for x in 0..<W {
                     let i = y * W + x
-                    if abs(Int(px[i]) - Int(bg[i])) > 28 && !inRest(x, y) {
+                    // Only what is moving fast right now: different from the background and
+                    // from the previous frame (a foot or shadow shifting slowly is not).
+                    if abs(Int(px[i]) - Int(bg[i])) > 28 && abs(Int(px[i]) - Int(prev[i])) > 28 && !inRest(x, y) {
                         band[(y - y0) * W + x] = true
                         cnt[x] += 1
                     }
@@ -139,10 +141,18 @@ enum SwingAnalyzer {
             out.notes.append("ヘッドを検出できませんでした")
             return out
         }
-        // Keep the last frames that advance monotonically toward the ball.
+        // Keep the last frames that advance monotonically toward the ball at a steady pace
+        // (an earlier frame can catch the shaft crossing the band ahead of the head).
         var clean: [(t: Double, e: Double, y: Double)] = []
         for p in pts.reversed() {
-            if clean.isEmpty || Double(dir) * (clean[clean.count - 1].e - p.e) > 0.1 * d { clean.append(p) }
+            if let l = clean.last, Double(dir) * (l.e - p.e) <= 0.1 * d { continue }
+            if clean.count >= 2 {
+                let a = clean[clean.count - 2], b = clean[clean.count - 1]
+                let last = Double(dir) * (a.e - b.e) / (a.t - b.t)
+                let step = Double(dir) * (b.e - p.e) / (b.t - p.t)
+                if !(step >= 0.6 * last && step <= 1.6 * last) { break }
+            }
+            clean.append(p)
             if clean.count == 4 { break }
         }
         clean.reverse()
