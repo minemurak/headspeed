@@ -14,6 +14,17 @@ struct SwingClip {
     var focal = 0.0              // focal length, clip pixels (rear view only)
     var centerX = 0.0            // optical centre, clip pixels (rear view only)
     var centerY = 0.0
+    /// How the ball was locked, for the exported swing (diagnosis only).
+    var lock: LockInfo?
+
+    struct LockInfo {
+        var frameWidth: Int, frameHeight: Int     // full camera frame
+        var stripY0: Int, stripStep: Int          // strip row 0 = frame row stripY0; strip px = stripStep frame px
+        var fieldOfView: Double                   // horizontal, degrees
+        var kind: String                          // BallKind of the locked candidate
+        var seconds: Double                       // from first seeing the candidate to the lock
+        var frame: GrayImage?                     // the full frame at the lock
+    }
 }
 
 struct SwingMeasurement {

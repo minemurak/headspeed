@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import ImageIO
 
 /// Saves the last analysed swing (the grey frames the analyzer saw, plus its inputs and
 /// result) so it can be shared and replayed with reference/replay.py. One swing is kept;
@@ -41,10 +42,31 @@ enum ClipExporter {
         if let v = result.launch { info["launch"] = v }
         if let v = result.attack { info["attack"] = v }
         if let v = result.shutter { info["shutter"] = v }
+        var files = [movURL, jsonURL]
+        if let l = clip.lock {
+            info["lock"] = ["frameWidth": l.frameWidth, "frameHeight": l.frameHeight,
+                            "stripY0": l.stripY0, "stripStep": l.stripStep,
+                            "fieldOfView": l.fieldOfView, "kind": l.kind, "seconds": l.seconds] as [String: Any]
+            // the whole frame at the lock, to tune the ball search on what the camera really saw
+            let jpgURL = dir.appendingPathComponent("lock.jpg")
+            if let f = l.frame, writeJPEG(f, to: jpgURL) { files.append(jpgURL) }
+        }
         guard JSONSerialization.isValidJSONObject(info),
               let data = try? JSONSerialization.data(withJSONObject: info, options: [.prettyPrinted, .sortedKeys]),
               (try? data.write(to: jsonURL)) != nil else { return nil }
-        return [movURL, jsonURL]
+        return files
+    }
+
+    private static func writeJPEG(_ img: GrayImage, to url: URL) -> Bool {
+        guard img.width > 0, img.height > 0,
+              let provider = CGDataProvider(data: Data(img.pixels) as CFData),
+              let cg = CGImage(width: img.width, height: img.height, bitsPerComponent: 8, bitsPerPixel: 8,
+                               bytesPerRow: img.width, space: CGColorSpaceCreateDeviceGray(),
+                               bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+                               provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent),
+              let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.jpeg" as CFString, 1, nil) else { return false }
+        CGImageDestinationAddImage(dest, cg, [kCGImageDestinationLossyCompressionQuality: 0.92] as CFDictionary)
+        return CGImageDestinationFinalize(dest)
     }
 
     private static func writeMovie(_ frames: [GrayImage], width W: Int, height H: Int, to url: URL) -> Bool {

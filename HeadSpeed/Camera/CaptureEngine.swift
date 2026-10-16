@@ -36,7 +36,9 @@ final class CaptureEngine: NSObject, ObservableObject {
             UserDefaults.standard.set(view.rawValue, forKey: Self.viewKey)
             lock.lock(); viewValue = view; pickValue = nil; lock.unlock()
             pickedPoint = nil
-            queue.async { if self.qState == .armed { self.disarm(resumeAfter: 0) } }
+            queue.async {
+                if self.qState == .armed { self.disarm(resumeAfter: 0) } else if self.qState == .searching { self.resetSearch() }
+            }
         }
     }
     private static let viewKey = "headspeed.view"
@@ -50,7 +52,7 @@ final class CaptureEngine: NSObject, ObservableObject {
     /// Guide area where the ball must be placed (x0, y0, x1, y1), normalized.
     /// Search area around a tapped point: about three ball widths each way at the usual distance.
     static func pickArea(_ p: CGPoint) -> (Double, Double, Double, Double) {
-        (max(0, Double(p.x) - 0.05), max(0, Double(p.y) - 0.07), min(1, Double(p.x) + 0.05), min(1, Double(p.y) + 0.07))
+        BallLocator.pickArea((Double(p.x), Double(p.y)))
     }
 
     /// Main thread. Measures the ball nearest `p` (normalized frame coordinates) from now on;
@@ -61,23 +63,22 @@ final class CaptureEngine: NSObject, ObservableObject {
         queue.async {
             switch self.qState {
             case .armed: self.disarm(resumeAfter: 0)
-            case .searching: self.candidate = nil; self.stableCount = 0
+            case .searching: self.resetSearch()
             default: break
             }
         }
     }
 
     static func guide(for view: CameraView) -> (Double, Double, Double, Double) {
-        switch view {
-        case .front: return (0.15, 0.30, 0.85, 0.97)
-        // From behind, the ball sits low and in the middle; this keeps sky and the range out.
-        case .rear: return (0.25, 0.45, 0.75, 0.97)
-        }
+        view == .rear ? BallLocator.rearGuide : BallLocator.frontGuide
     }
 
     let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "headspeed.capture", qos: .userInteractive)
     private let analysisQueue = DispatchQueue(label: "headspeed.analysis", qos: .userInitiated)
+    /// Ball search and following run here, on copies of the frame, so a slow search never
+    /// holds up the camera (frames arriving late are dropped).
+    private let searchQueue = DispatchQueue(label: "headspeed.search", qos: .userInitiated)
     private let lock = NSLock()
     private var clubValue: Club = .driver
     private var viewValue: CameraView = CaptureEngine.savedView
@@ -95,10 +96,24 @@ final class CaptureEngine: NSObject, ObservableObject {
     private var energyPrev: [UInt8] = []
     private var energyTimes: [Double] = []
     private var energyVals: [Double] = []
-    private var candidate: BallFix?
-    private var stableDs: [Double] = []
-    private var stableCount = 0
+    // Ball search, capture-queue side: one look in flight at a time; results of looks started
+    // before a reset (searchGen) are dropped.
+    private var searchBusy = false
+    private var searchGen = 0
+    private var lastLookFrame = 0
+    private var shownBall = false
+    private var pendingLock: (cand: BallCandidate, seconds: Double)?
+    // Search-queue side.
+    private var follower: BallFollower?
+    private var followStart = 0.0
+    private var lastFullSearch = -1.0
+    /// The last measured ball per camera position: the next one usually goes on the same tee.
+    private var homeBall: [CameraView: BallCandidate] = [:]
+
     private var armedBall: BallFix?
+    private var armedKind: BallKind = .round
+    private var armedLockSeconds = 0.0
+    private var armedFrame: GrayImage?
     private var strip: (y0: Int, step: Int, width: Int, height: Int)?
     private var ring: FrameRing?
     private var coreIdx: [Int] = []          // full-res offsets (y * bytesPerRow + x)
@@ -291,7 +306,12 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
 
         switch qState {
         case .searching:
-            if t >= resumeAt && frameIndex % 24 == 0 { searchBall(y, W: W, H: H, bpr: bpr, t: t) }
+            if let p = pendingLock {
+                pendingLock = nil
+                arm(p.cand, seconds: p.seconds, y: y, W: W, H: H, bpr: bpr, t: t)
+            } else if t >= resumeAt && !searchBusy && frameIndex - lastLookFrame >= 6 {
+                look(y, W: W, H: H, bpr: bpr, t: t)
+            }
         case .armed:
             writeStrip(y, bpr: bpr, t: t)
             checkTrigger(y, t: t)
@@ -344,80 +364,110 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
 
     // MARK: Ball search
 
-    private func searchBall(_ y: UnsafePointer<UInt8>, W: Int, H: Int, bpr: Int, t: Double) {
-        lock.lock(); let rear = viewValue == .rear; let pick = pickValue; lock.unlock()
-        // Rear: the ball's outline is searched on a half-size frame (a quarter is too coarse
-        // for a ~30 px ball's edges); face-on keeps the quarter-size bright-blob search.
-        let f = rear ? 2 : 4
-        let sw = W / f, sh = H / f
-        var small = [UInt8](repeating: 0, count: sw * sh)
-        for sy in 0..<sh {
-            let row = y + sy * f * bpr
-            for sx in 0..<sw { small[sy * sw + sx] = row[sx * f] }
+    /// One look for the ball (about 40 a second at most): on a copy of the frame, on the search
+    /// queue. While a candidate is being followed this is a cheap match at full resolution; a
+    /// full search runs at most every 0.1 s.
+    private func look(_ y: UnsafePointer<UInt8>, W: Int, H: Int, bpr: Int, t: Double) {
+        lastLookFrame = frameIndex
+        var px = [UInt8](repeating: 0, count: W * H)
+        px.withUnsafeMutableBufferPointer { dst in
+            for row in 0..<H { memcpy(dst.baseAddress! + row * W, y + row * bpr, W) }
         }
-        let img = GrayImage(width: sw, height: sh, pixels: small)
-        // A tapped point narrows the search to the area around it (another ball nearby, such
-        // as one left on the auto-tee next to the mat, is otherwise a valid pick too).
-        let area = pick.map { Self.pickArea(CGPoint(x: $0.0, y: $0.1)) }
-        // Full-resolution crop around a coarse fix, refined to a sub-pixel diameter.
-        func refined(_ coarse: BallFix, _ refine: (GrayImage, BallFix) -> BallFix?) -> BallFix? {
-            let approx = BallFix(x: coarse.x * Double(f) + Double(f - 1) / 2, y: coarse.y * Double(f) + Double(f - 1) / 2, d: coarse.d * Double(f))
-            // room for refineLit's larger starting diameter
-            let half = Int(approx.d * 2.1) + 2
-            let x0 = max(0, Int(approx.x) - half), x1 = min(W, Int(approx.x) + half)
-            let y0 = max(0, Int(approx.y) - half), y1 = min(H, Int(approx.y) + half)
-            guard x1 - x0 > 4, y1 - y0 > 4 else { return nil }
-            var crop = [UInt8](repeating: 0, count: (x1 - x0) * (y1 - y0))
-            for cy in y0..<y1 {
-                let row = y + cy * bpr
-                for cx in x0..<x1 { crop[(cy - y0) * (x1 - x0) + (cx - x0)] = row[cx] }
+        let img = GrayImage(width: W, height: H, pixels: px)
+        lock.lock(); let view = viewValue; let pick = pickValue; lock.unlock()
+        let horizon = horizonRow(W: W, H: H)
+        let gen = searchGen
+        searchBusy = true
+        searchQueue.async {
+            let out = self.searchStep(img, t: t, view: view, pick: pick, horizon: horizon)
+            self.queue.async {
+                self.searchBusy = false
+                guard gen == self.searchGen, self.qState == .searching else { return }
+                switch out {
+                case .none: break
+                case .seen(let fix):
+                    if fix != nil || self.shownBall { self.publishBall(fix) }
+                    self.shownBall = fix != nil
+                case .locked(let cand, let seconds):
+                    self.publishBall(cand.fix)
+                    self.shownBall = true
+                    if cand.fix.d >= 14 {
+                        self.pendingLock = (cand, seconds)       // armed on the next frame
+                    } else {
+                        // too small to measure (the overlay says so): keep looking
+                        self.resetSearch()
+                    }
+                }
             }
-            let cropImg = GrayImage(width: x1 - x0, height: y1 - y0, pixels: crop)
-            let local = BallFix(x: approx.x - Double(x0), y: approx.y - Double(y0), d: approx.d)
-            guard let r = refine(cropImg, local) else { return nil }
-            return BallFix(x: r.x + Double(x0), y: r.y + Double(y0), d: r.d)
         }
-        var found: BallFix?
-        if rear {
-            if let c = BallFinder.searchRear(img, guide: area ?? Self.guide(for: .rear), minD: 14.0 / Double(f), maxD: 70.0 / Double(f), anchor: pick ?? (0.5, 0.75)) {
-                found = refined(c) { BallFinder.refineRear($0, approx: $1) }
+    }
+
+    private enum LookResult {
+        case none                                 // nothing new (no search due yet)
+        case seen(BallFix?)                       // following this candidate, or nothing found
+        case locked(BallCandidate, Double)        // ball and seconds since it was first seen
+    }
+
+    /// Search queue only.
+    private func searchStep(_ img: GrayImage, t: Double, view: CameraView, pick: (Double, Double)?, horizon: Double?) -> LookResult {
+        if var f = follower {
+            switch f.step(t: t, img) {
+            case .locked(let fix):
+                follower = nil
+                return .locked(BallCandidate(fix: fix, kind: f.kind), t - followStart)
+            case .following(let fix):
+                follower = f
+                return .seen(fix)
+            case .lost:
+                follower = nil
+                return .seen(nil)
             }
+        }
+        var cand: BallCandidate?
+        let home = pick == nil ? homeBall[view] : nil
+        if let home, let r = BallLocator.track(img, home.fix, kind: home.kind) {
+            // the next ball on the same tee: no full search needed
+            cand = BallCandidate(fix: r, kind: home.kind)
+        } else if t - lastFullSearch >= 0.1 || lastFullSearch > t {
+            lastFullSearch = t
+            cand = BallLocator.locate(img, rear: view == .rear, anchor: pick, home: home, horizon: horizon).first
         } else {
-            let guide = area ?? Self.guide(for: .front), minD = 12.0 / Double(f), maxD = 110.0 / Double(f)
-            if let c = BallFinder.search(img, guide: guide, minD: minD, maxD: maxD) {
-                found = refined(c) { BallFinder.refine($0, approx: $1) }
-            }
-            // A ball lit only on one side (sun behind it) is a crescent to the bright search.
-            if found == nil, let c = BallFinder.searchLit(img, guide: guide, minD: minD, maxD: maxD, anchor: pick) {
-                found = refined(c) { BallFinder.refineLit($0, approx: $1) }
-            }
+            return .none
         }
-        guard let fix = found else {
-            candidate = nil; stableCount = 0; stableDs = []
-            publishBall(nil)
-            return
-        }
-        if let c = candidate, abs(c.x - fix.x) < 0.15 * fix.d, abs(c.y - fix.y) < 0.15 * fix.d, abs(c.d - fix.d) < 0.15 * fix.d {
-            stableCount += 1
-        } else {
-            stableCount = 1
-            stableDs = []
-        }
-        candidate = fix
-        stableDs.append(fix.d)
-        publishBall(fix)
-        if stableCount >= 5 && fix.d >= 14 {
-            // the outline fit wanders a little frame to frame (most on a half-lit ball); the
-            // diameter sets the scale for every speed, so take the median over the stable run
-            let ds = stableDs.sorted()
-            arm(BallFix(x: fix.x, y: fix.y, d: ds[ds.count / 2]), y: y, bpr: bpr, t: t)
-        }
+        guard let cand else { return .seen(nil) }
+        follower = BallFollower(img, cand)
+        followStart = t
+        return .seen(cand.fix)
+    }
+
+    /// Drops the candidate being followed (search queue) and any look in flight.
+    private func resetSearch() {
+        searchGen += 1
+        pendingLock = nil
+        searchQueue.async { self.follower = nil }
+    }
+
+    /// Image row of the horizon, from the tilt and the format's field of view; nil when the
+    /// motion sensor has nothing or the phone is not held the expected way (landscape, charging
+    /// port on the right), since then "up" in the picture is not up.
+    private func horizonRow(W: Int, H: Int) -> Double? {
+        guard let g = motion.deviceMotion?.gravity, g.x < -0.5, fieldOfView > 1, fieldOfView < 179 else { return nil }
+        return BallLocator.horizonRow(width: W, height: H, fieldOfView: fieldOfView, pitch: asin(max(-1, min(1, -g.z))))
     }
 
     // MARK: Armed
 
-    private func arm(_ fix: BallFix, y: UnsafePointer<UInt8>, bpr: Int, t: Double) {
+    private func arm(_ cand: BallCandidate, seconds: Double, y: UnsafePointer<UInt8>, W: Int, H: Int, bpr: Int, t: Double) {
+        let fix = cand.fix
         lock.lock(); armedView = viewValue; lock.unlock()
+        armedKind = cand.kind
+        armedLockSeconds = seconds
+        // the full frame at the lock, exported with the swing for diagnosis
+        var px = [UInt8](repeating: 0, count: W * H)
+        px.withUnsafeMutableBufferPointer { dst in
+            for row in 0..<H { memcpy(dst.baseAddress! + row * W, y + row * bpr, W) }
+        }
+        armedFrame = GrayImage(width: W, height: H, pixels: px)
         // Face-on: a strip around the ball. Rear: everything above the ball too, since the
         // head comes down from high in the frame (at half resolution for a 1080p format).
         let rear = armedView == .rear
@@ -594,8 +644,9 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
     private func disarm(resumeAfter: Double) {
         strip = nil
         armedBall = nil
-        candidate = nil
-        stableCount = 0
+        armedFrame = nil
+        resetSearch()
+        shownBall = false
         overCount = 0
         postRemaining = 0
         resumeAt = resumeAfter
@@ -624,6 +675,10 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
                              triggerIndex: triggerIndex - snap.firstIndex,
                              cameraPitch: armedPitch)
         let view = armedView
+        let home = BallCandidate(fix: ball, kind: armedKind)
+        clip.lock = SwingClip.LockInfo(frameWidth: frameW, frameHeight: frameH, stripY0: g.y0, stripStep: g.step,
+                                       fieldOfView: fieldOfView, kind: armedKind.rawValue,
+                                       seconds: armedLockSeconds, frame: armedFrame)
         if view == .rear {
             let fov = fieldOfView > 1 && fieldOfView < 179 ? fieldOfView : 70
             clip.rear = true
@@ -658,6 +713,7 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
                 // up (often while walking over to look at the last result). Not a swing; look
                 // for the ball again, since it may now sit elsewhere in the frame.
                 self.queue.async { self.disarm(resumeAfter: (self.energyTimes.last ?? 0) + 1.0) }
+                self.searchQueue.async { self.homeBall[view] = nil }      // the picture moved
                 return
             }
             if !result.hasMeasurement
@@ -681,11 +737,14 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
             let files = ClipExporter.export(clip, club: club, result: result) ?? []
             // HistoryStore keeps only measured swings; keep their files alongside.
             if result.hasMeasurement { SwingArchive.store(files, id: result.id, date: result.date) }
+            // the next ball usually goes on the same spot: look there first
+            if result.hasMeasurement { self.searchQueue.async { self.homeBall[view] = home } }
             DispatchQueue.main.async { self.lastClip = files }
             self.queue.async {
-                // Give the ball time to leave and the golfer time to settle.
+                // Give the ball time to leave. The next ball must then sit still for a quarter
+                // second on its own before it is locked, so no longer pause is needed.
                 let now = self.energyTimes.last ?? 0
-                self.disarm(resumeAfter: now + 1.5)
+                self.disarm(resumeAfter: now + 0.7)
             }
         }
     }

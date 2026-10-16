@@ -14,7 +14,12 @@ def mean_in(img, cx, cy, r0, r1):
     return float(img[y0:y1 + 1, x0:x1 + 1][m].mean()) if m.any() else 0.0
 
 def search(img, guide, minD, maxD):
-    """Current (percentile threshold) version."""
+    """The best bright blob (see search_all)."""
+    c = search_all(img, guide, minD, maxD)
+    return c[0] if c else None
+
+def search_all(img, guide, minD, maxD):
+    """Bright, round, compact blobs above a percentile threshold, best (contrast x fill) first."""
     H, W = img.shape
     gx0, gx1 = max(0, int(guide[0]*W)), min(W, int(guide[2]*W))
     gy0, gy1 = max(0, int(guide[1]*H)), min(H, int(guide[3]*H))
@@ -46,7 +51,7 @@ def refine(img, approx):
     return b['sx']/b['area'], b['sy']/b['area'], 2*math.sqrt(b['area']/math.pi)
 
 def pick(img, mask, minD, maxD):
-    best = None
+    out = []
     for b in components(mask):
         d = 2*math.sqrt(b['area']/math.pi)
         if not (minD <= d <= maxD): continue
@@ -55,9 +60,9 @@ def pick(img, mask, minD, maxD):
         cx = b['sx']/b['area']; cy = b['sy']/b['area']
         contrast = mean_in(img, cx, cy, 0, d*0.3) - mean_in(img, cx, cy, d*0.8, d*1.6)
         if contrast < 40: continue
-        score = contrast*b['area']/(bw*bh)
-        if best is None or score > best[1]: best = ((cx, cy, d), score)
-    return best[0] if best else None
+        out.append((contrast*b['area']/(bw*bh), (cx, cy, d)))
+    out.sort(key=lambda o: -o[0])
+    return [o[1] for o in out]
 
 
 def integral(img):
@@ -73,6 +78,11 @@ def box(I, x, y, h):
 # ---- face-on fallback
 
 def search_lit(img, guide, minD, maxD, anchor=None):
+    """The preferred candidate of search_lit_all."""
+    c = search_lit_all(img, guide, minD, maxD, anchor)
+    return c[0] if c else None
+
+def search_lit_all(img, guide, minD, maxD, anchor=None):
     """Fallback when the ball is only partly lit (sun from behind, the far half in its own
     shade, on sunlit grass as bright as that shade): centre-surround brightness, so the lit
     part still stands out on average, then a shape check so a white shoe does not pass."""
@@ -112,15 +122,15 @@ def search_lit(img, guide, minD, maxD, anchor=None):
         d = max(bw, bh)
         if not (minD <= d <= maxD): continue
         valid.append((s, float(x0 + hit['sx']/hit['area']), float(y0 + hit['sy']/hit['area']), float(d)))
-    if not valid: return None
+    if not valid: return []
     if anchor is not None:
-        s, x, y, d = max(valid, key=lambda v: v[0]/(1 + 3*math.hypot(v[1]/W - anchor[0], v[2]/H - anchor[1])))
+        valid.sort(key=lambda v: -v[0]/(1 + 3*math.hypot(v[1]/W - anchor[0], v[2]/H - anchor[1])))
     else:
-        # face-on, the ball lies in front of the feet: of the strong candidates, the lowest
-        # (a white shoe toe is about as bright and compact)
+        # face-on, the ball lies in front of the feet: the strong candidates lowest first
+        # (a white shoe toe is about as bright and compact), then the rest
         top = max(v[0] for v in valid)
-        s, x, y, d = max((v for v in valid if v[0] >= 0.8*top), key=lambda v: v[2])
-    return x, y, d
+        valid.sort(key=lambda v: (v[0] < 0.8*top, -v[2] if v[0] >= 0.8*top else -v[0]))
+    return [(x, y, d) for s, x, y, d in valid]
 
 
 # ---- rear view: the ball sits on a tee, often in front of a split background (dark field
@@ -149,6 +159,11 @@ def coverage(gx, gy, mag, cx, cy, r, emin):
     return hit/n
 
 def search_rear(img, guide, minD, maxD, anchor, emin=10.0):
+    """The best candidate of search_rear_all."""
+    c = search_rear_all(img, guide, minD, maxD, anchor, emin)
+    return c[0] if c else None
+
+def search_rear_all(img, guide, minD, maxD, anchor, emin=10.0):
     """Circle Hough on edge directions (either polarity) inside the guide, on a half-size
     frame. Candidates must have edges all round (a square sticker or a tee fails); among
     them, the one nearest the anchor (x, y in 0..1) wins; specks near the minimum size count half."""
@@ -173,13 +188,14 @@ def search_rear(img, guide, minD, maxD, anchor, emin=10.0):
             if score[y, x] < score[max(0, y-1):y+2, max(0, x-1):x+2].max(): continue
             cands.append((score[y, x], x + gx0, y + gy0, r))
     cands.sort(reverse=True)
-    best = None
+    out = []
     for sc, x, y, r in cands[:60]:
         cov = coverage(gx, gy, mag, x, y, r, emin)
         if cov < 0.75: continue
         key = cov*min(1.0, r/minD)/(1 + 3*math.hypot(x/W - anchor[0], y/H - anchor[1]))
-        if best is None or key > best[1]: best = ((float(x), float(y), 2.0*r), key)
-    return best[0] if best else None
+        out.append((key, (float(x), float(y), 2.0*r)))
+    out.sort(key=lambda o: -o[0])     # stable: equal keys keep the Hough order, as in Swift
+    return [o[1] for o in out]
 
 def bilinear(img, x, y):
     H, W = img.shape
