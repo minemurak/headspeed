@@ -183,7 +183,8 @@ enum BallFinder {
 
     /// Sub-pixel circle: on rays from the approximate centre (tee side skipped), the strongest
     /// radial edge with a parabolic peak, then a least-squares circle with outlier rejection.
-    static func refineRear(_ img: GrayImage, approx: BallFix) -> BallFix? {
+    /// `strong`: keep only rays whose edge is at least this share of the strongest one.
+    static func refineRear(_ img: GrayImage, approx: BallFix, strong: Double? = nil, minPts: Int = 12) -> BallFix? {
         let W = img.width, H = img.height
         let d0 = approx.d
         func at(_ x: Double, _ y: Double) -> Double? {
@@ -199,6 +200,7 @@ enum BallFinder {
         while rr0 < 0.85 * d0 { rs.append(rr0); rr0 += 0.5 }
         guard rs.count >= 3 else { return nil }
         var pts: [(Double, Double)] = []
+        var strength: [Double] = []
         rays: for deg in stride(from: 0.0, to: 360.0, by: 6) {
             let a = deg * .pi / 180
             if a >= teeSide.0 && a <= teeSide.1 { continue }
@@ -220,8 +222,12 @@ enum BallFinder {
             let off = den < 0 ? 0.5 * (g[i - 1] - g[i + 1]) / den : 0
             let rr = rs[i] + 0.5 * off
             pts.append((approx.x + ux * rr, approx.y + uy * rr))
+            strength.append(g[i])
         }
-        guard pts.count >= 12 else { return nil }
+        if let strong, let gmax = strength.max() {
+            pts = zip(pts, strength).filter { $0.1 >= strong * gmax }.map { $0.0 }
+        }
+        guard pts.count >= minPts else { return nil }
         var keep = [Bool](repeating: true, count: pts.count)
         var cx = 0.0, cy = 0.0, rad = 0.0
         var res = [Double](repeating: 0, count: pts.count)
@@ -241,11 +247,107 @@ enum BallFinder {
             res = pts.map { abs(hypot($0.0 - cx, $0.1 - cy) - rad) }
             let lim = max(0.6, 2.5 * median(zip(res, keep).filter { $0.1 }.map { $0.0 }))
             keep = res.map { $0 <= lim }
-            guard keep.filter({ $0 }).count >= 12 else { return nil }
+            guard keep.filter({ $0 }).count >= minPts else { return nil }
         }
         let medRes = median(zip(res, keep).filter { $0.1 }.map { $0.0 })
         guard medRes <= 0.04 * rad + 0.3, 2 * rad > 0.7 * d0, 2 * rad < 1.3 * d0 else { return nil }
         return BallFix(x: cx, y: cy, d: 2 * rad)
+    }
+
+    // MARK: Face-on, partly lit
+    // With the sun behind the ball, only its near-left part is lit; the rest is in the ball's
+    // own shade, as dark as sunlit grass, so the bright blob is a crescent that fails the
+    // roundness checks above. Mirrors search_lit / refine_lit in reference/ballfinder.py.
+
+    /// Centre-surround brightness (box means on an integral image), so the lit part still
+    /// stands out on average, then a shape check on the bright part so a white shoe toe or a
+    /// leg does not pass. With `anchor` (a tapped point) the nearest strong candidate wins;
+    /// without, the lowest strong one (face-on, the ball lies in front of the feet).
+    static func searchLit(_ img: GrayImage, guide: (Double, Double, Double, Double),
+                          minD: Double, maxD: Double, anchor: (Double, Double)?) -> BallFix? {
+        let W = img.width, H = img.height
+        let gx0 = max(0, Int(guide.0 * Double(W))), gx1 = min(W, Int(guide.2 * Double(W)))
+        let gy0 = max(0, Int(guide.1 * Double(H))), gy1 = min(H, Int(guide.3 * Double(H)))
+        guard gx1 - gx0 > 8, gy1 - gy0 > 8 else { return nil }
+        var I = [Double](repeating: 0, count: (W + 1) * (H + 1))
+        for y in 0..<H {
+            var row = 0.0
+            for x in 0..<W {
+                row += Double(img.pixels[y * W + x])
+                I[(y + 1) * (W + 1) + x + 1] = I[y * (W + 1) + x + 1] + row
+            }
+        }
+        func box(_ x: Int, _ y: Int, _ h: Int) -> (Double, Int) {
+            let x0 = max(0, x - h), x1 = min(W, x + h + 1), y0 = max(0, y - h), y1 = min(H, y + h + 1)
+            let s = I[y1 * (W + 1) + x1] - I[y0 * (W + 1) + x1] - I[y1 * (W + 1) + x0] + I[y0 * (W + 1) + x0]
+            return (s, (x1 - x0) * (y1 - y0))
+        }
+        let gw = gx1 - gx0, gh = gy1 - gy0
+        var cands: [(s: Double, x: Int, y: Int, r: Int)] = []
+        var sc = [Double](repeating: -1e9, count: gw * gh)
+        for r in max(2, Int(minD / 2))...max(2, Int(maxD / 2)) {
+            let hi = max(1, Int((0.6 * Double(r)).rounded())), hr = Int((1.25 * Double(r)).rounded()), ho = 2 * r
+            for y in gy0..<gy1 {
+                for x in gx0..<gx1 {
+                    let (si, ni) = box(x, y, hi), (sm, nm) = box(x, y, hr), (so, no) = box(x, y, ho)
+                    sc[(y - gy0) * gw + (x - gx0)] = no > nm ? si / Double(ni) - (so - sm) / Double(no - nm) : -1e9
+                }
+            }
+            for y in 0..<gh {
+                for x in 0..<gw where sc[y * gw + x] >= 60 {
+                    let v = sc[y * gw + x]
+                    var peak = true
+                    for yy in max(0, y - 1)...min(gh - 1, y + 1) {
+                        for xx in max(0, x - 1)...min(gw - 1, x + 1) where sc[yy * gw + xx] > v { peak = false }
+                    }
+                    if peak { cands.append((v, x + gx0, y + gy0, r)) }
+                }
+            }
+        }
+        cands.sort { $0.s > $1.s }
+        var valid: [(s: Double, fix: BallFix)] = []
+        for c in cands.prefix(40) {
+            let w = Int((2.5 * Double(c.r)).rounded(.up))
+            let x0 = max(0, c.x - w), x1 = min(W, c.x + w + 1), y0 = max(0, c.y - w), y1 = min(H, c.y + w + 1)
+            let ww = x1 - x0, wh = y1 - y0
+            let inner = meanIn(img, cx: Double(c.x), cy: Double(c.y), r0: 0, r1: 0.6 * Double(c.r))
+            let ring = meanIn(img, cx: Double(c.x), cy: Double(c.y), r0: 1.25 * Double(c.r), r1: 2.0 * Double(c.r))
+            let thr = (inner + ring) / 2
+            var mask = [Bool](repeating: false, count: ww * wh)
+            for y in y0..<y1 { for x in x0..<x1 where Double(img.pixels[y * W + x]) >= thr { mask[(y - y0) * ww + (x - x0)] = true } }
+            let px = c.x - x0, py = c.y - y0
+            var hit: Blob?
+            for b in Blobs.find(mask: mask, width: ww, height: wh)
+            where b.minX <= px && px <= b.maxX && b.minY <= py && py <= b.maxY && (hit == nil || b.area > hit!.area) { hit = b }
+            guard let b = hit else { continue }
+            // compact and on its own: not running on to the window's edge (a shoe, a leg)
+            if b.minX == 0 || b.minY == 0 || b.maxX == ww - 1 || b.maxY == wh - 1 { continue }
+            let aspect = Double(max(b.boxW, b.boxH)) / Double(min(b.boxW, b.boxH))
+            guard aspect <= 1.6, b.fill >= 0.4 else { continue }
+            let d = Double(max(b.boxW, b.boxH))
+            guard d >= minD, d <= maxD else { continue }
+            valid.append((c.s, BallFix(x: Double(x0) + b.cx, y: Double(y0) + b.cy, d: d)))
+        }
+        guard let top = valid.map({ $0.s }).max() else { return nil }
+        if let a = anchor {
+            func key(_ v: (s: Double, fix: BallFix)) -> Double {
+                v.s / (1 + 3 * hypot(v.fix.x / Double(W) - a.0, v.fix.y / Double(H) - a.1))
+            }
+            return valid.max { key($0) < key($1) }?.fix
+        }
+        return valid.filter { $0.s >= 0.8 * top }.max { $0.fix.y < $1.fix.y }?.fix
+    }
+
+    /// Only the lit arc has a real outline (the shaded side's edge is lost in the grass
+    /// texture): fit the circle to the strong radial edges alone, starting from a few
+    /// diameters since the lit part only hints at the size.
+    static func refineLit(_ img: GrayImage, approx: BallFix) -> BallFix? {
+        for k in [1.0, 1.25, 0.8] {
+            if let r = refineRear(img, approx: BallFix(x: approx.x, y: approx.y, d: k * approx.d), strong: 0.5, minPts: 8) {
+                return r
+            }
+        }
+        return nil
     }
 
     private static func median(_ v: [Double]) -> Double {

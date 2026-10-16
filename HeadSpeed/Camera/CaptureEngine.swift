@@ -96,6 +96,7 @@ final class CaptureEngine: NSObject, ObservableObject {
     private var energyTimes: [Double] = []
     private var energyVals: [Double] = []
     private var candidate: BallFix?
+    private var stableDs: [Double] = []
     private var stableCount = 0
     private var armedBall: BallFix?
     private var strip: (y0: Int, step: Int, width: Int, height: Int)?
@@ -358,41 +359,59 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
         // A tapped point narrows the search to the area around it (another ball nearby, such
         // as one left on the auto-tee next to the mat, is otherwise a valid pick too).
         let area = pick.map { Self.pickArea(CGPoint(x: $0.0, y: $0.1)) }
-        let found = rear
-            ? BallFinder.searchRear(img, guide: area ?? Self.guide(for: .rear), minD: 14.0 / Double(f), maxD: 70.0 / Double(f), anchor: pick ?? (0.5, 0.75))
-            : BallFinder.search(img, guide: area ?? Self.guide(for: .front), minD: 12.0 / Double(f), maxD: 110.0 / Double(f))
-        guard let coarse = found else {
-            candidate = nil; stableCount = 0
+        // Full-resolution crop around a coarse fix, refined to a sub-pixel diameter.
+        func refined(_ coarse: BallFix, _ refine: (GrayImage, BallFix) -> BallFix?) -> BallFix? {
+            let approx = BallFix(x: coarse.x * Double(f) + Double(f - 1) / 2, y: coarse.y * Double(f) + Double(f - 1) / 2, d: coarse.d * Double(f))
+            // room for refineLit's larger starting diameter
+            let half = Int(approx.d * 2.1) + 2
+            let x0 = max(0, Int(approx.x) - half), x1 = min(W, Int(approx.x) + half)
+            let y0 = max(0, Int(approx.y) - half), y1 = min(H, Int(approx.y) + half)
+            guard x1 - x0 > 4, y1 - y0 > 4 else { return nil }
+            var crop = [UInt8](repeating: 0, count: (x1 - x0) * (y1 - y0))
+            for cy in y0..<y1 {
+                let row = y + cy * bpr
+                for cx in x0..<x1 { crop[(cy - y0) * (x1 - x0) + (cx - x0)] = row[cx] }
+            }
+            let cropImg = GrayImage(width: x1 - x0, height: y1 - y0, pixels: crop)
+            let local = BallFix(x: approx.x - Double(x0), y: approx.y - Double(y0), d: approx.d)
+            guard let r = refine(cropImg, local) else { return nil }
+            return BallFix(x: r.x + Double(x0), y: r.y + Double(y0), d: r.d)
+        }
+        var found: BallFix?
+        if rear {
+            if let c = BallFinder.searchRear(img, guide: area ?? Self.guide(for: .rear), minD: 14.0 / Double(f), maxD: 70.0 / Double(f), anchor: pick ?? (0.5, 0.75)) {
+                found = refined(c) { BallFinder.refineRear($0, approx: $1) }
+            }
+        } else {
+            let guide = area ?? Self.guide(for: .front), minD = 12.0 / Double(f), maxD = 110.0 / Double(f)
+            if let c = BallFinder.search(img, guide: guide, minD: minD, maxD: maxD) {
+                found = refined(c) { BallFinder.refine($0, approx: $1) }
+            }
+            // A ball lit only on one side (sun behind it) is a crescent to the bright search.
+            if found == nil, let c = BallFinder.searchLit(img, guide: guide, minD: minD, maxD: maxD, anchor: pick) {
+                found = refined(c) { BallFinder.refineLit($0, approx: $1) }
+            }
+        }
+        guard let fix = found else {
+            candidate = nil; stableCount = 0; stableDs = []
             publishBall(nil)
             return
         }
-        let approx = BallFix(x: coarse.x * Double(f) + Double(f - 1) / 2, y: coarse.y * Double(f) + Double(f - 1) / 2, d: coarse.d * Double(f))
-        // Full-resolution crop around the coarse fix for a sub-pixel diameter.
-        let half = Int(approx.d * 1.6) + 2
-        let x0 = max(0, Int(approx.x) - half), x1 = min(W, Int(approx.x) + half)
-        let y0 = max(0, Int(approx.y) - half), y1 = min(H, Int(approx.y) + half)
-        guard x1 - x0 > 4, y1 - y0 > 4 else { return }
-        var crop = [UInt8](repeating: 0, count: (x1 - x0) * (y1 - y0))
-        for cy in y0..<y1 {
-            let row = y + cy * bpr
-            for cx in x0..<x1 { crop[(cy - y0) * (x1 - x0) + (cx - x0)] = row[cx] }
-        }
-        let cropImg = GrayImage(width: x1 - x0, height: y1 - y0, pixels: crop)
-        let local = BallFix(x: approx.x - Double(x0), y: approx.y - Double(y0), d: approx.d)
-        guard let r = rear ? BallFinder.refineRear(cropImg, approx: local) : BallFinder.refine(cropImg, approx: local) else {
-            candidate = nil; stableCount = 0
-            publishBall(nil)
-            return
-        }
-        let fix = BallFix(x: r.x + Double(x0), y: r.y + Double(y0), d: r.d)
         if let c = candidate, abs(c.x - fix.x) < 0.15 * fix.d, abs(c.y - fix.y) < 0.15 * fix.d, abs(c.d - fix.d) < 0.15 * fix.d {
             stableCount += 1
         } else {
             stableCount = 1
+            stableDs = []
         }
         candidate = fix
+        stableDs.append(fix.d)
         publishBall(fix)
-        if stableCount >= 5 && fix.d >= 14 { arm(fix, y: y, bpr: bpr, t: t) }
+        if stableCount >= 5 && fix.d >= 14 {
+            // the outline fit wanders a little frame to frame (most on a half-lit ball); the
+            // diameter sets the scale for every speed, so take the median over the stable run
+            let ds = stableDs.sorted()
+            arm(BallFix(x: fix.x, y: fix.y, d: ds[ds.count / 2]), y: y, bpr: bpr, t: t)
+        }
     }
 
     // MARK: Armed
