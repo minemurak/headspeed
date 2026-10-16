@@ -167,21 +167,33 @@ enum SwingAnalyzer {
         var headPxS: Double?
         if clean.count >= 2 {
             let t = clean.map { $0.t }
-            let vx = linearFit(t, clean.map { $0.e }).slope
+            var vx = linearFit(t, clean.map { $0.e }).slope
             var vy = 0.0
             if !clean.contains(where: { $0.y.isNaN }) { vy = linearFit(t, clean.map { $0.y }).slope * yCorr }
             vy = max(-abs(vx) * 0.27, min(abs(vx) * 0.27, vy))
+            var tMean = t.reduce(0, +) / Double(t.count)
+            let eMean = clean.map { $0.e }.reduce(0, +) / Double(clean.count)
+            let intercept = eMean - vx * tMean
+            let eContact = bx - Double(dir) * 0.5 * d
+            let tContact = vx != 0 ? (eContact - intercept) / vx : tMean
+            // The head's whole-body displacement over the last frames, when it agrees roughly.
+            let hm = headMatch(clip, bg: bg, ball: (bx, by, d), band: (y0, y1), kImp: kImp, dir: dir, shaft: shaft)
+            if !hm.isEmpty, vx != 0 {
+                let mvx = hm.map { $0.vx }.reduce(0, +) / Double(hm.count)
+                let mvy = hm.map { $0.vy }.reduce(0, +) / Double(hm.count) * yCorr
+                if mvx / vx >= 0.6 && mvx / vx <= 2.0 {
+                    // the whole velocity along the arc (a few frames out it still dips noticeably)
+                    vx = mvx
+                    vy = max(-abs(mvx) * 0.6, min(abs(mvx) * 0.6, mvy))
+                    tMean = hm.map { $0.t }.reduce(0, +) / Double(hm.count)
+                }
+            }
             let pxs = hypot(vx, vy)
             headPxS = pxs
             let hs = pxs * mmPerPx / 1000
             out.headSpeed = hs
             // The fitted line is a chord of the swing arc: rotate it to the tangent at contact.
             let chord = atan2(-vy, abs(vx)) * 180 / .pi
-            let tMean = t.reduce(0, +) / Double(t.count)
-            let eMean = clean.map { $0.e }.reduce(0, +) / Double(clean.count)
-            let intercept = eMean - vx * tMean
-            let eContact = bx - Double(dir) * 0.5 * d
-            let tContact = vx != 0 ? (eContact - intercept) / vx : tMean
             out.attack = chord + (hs / club.swingRadius) * (tContact - tMean) * 180 / .pi
         } else {
             out.notes.append("ヘッドを検出できませんでした")
@@ -298,6 +310,121 @@ enum SwingAnalyzer {
         let w = Double(b.boxW)
         guard w >= 0.5 * d, w <= 2.5 * d else { return nil }
         return (Double(x0) + Double(b.minX + b.maxX) / 2, Double(y0) + Double(b.minY) + w / 2, w)
+    }
+
+    /// Head displacement between consecutive frames shortly before contact, by matching the
+    /// head's own pixels (the moving region within a head's length of its front) in the next
+    /// frame. Uses the whole head, so the hosel and shaft that lead the face no longer set the
+    /// speed, as they can for a single leading-edge column. Mirrors head_match() in
+    /// reference/analyzer.py. Velocities in px/s.
+    static func headMatch(_ clip: SwingClip, bg: [Int16], ball: (Double, Double, Double), band: (Int, Int),
+                          kImp: Int, dir: Int, shaft: Int) -> [(t: Double, vx: Double, vy: Double)] {
+        let (bx, by, d) = ball
+        let (y0, y1) = band
+        let W = clip.frames[0].width, H = clip.frames[0].height
+        guard y1 > y0 else { return [] }
+        let restR2 = (0.75 * d) * (0.75 * d)
+        func inRest(_ x: Int, _ y: Int) -> Bool {
+            let dx = Double(x) - bx, dy = Double(y) - by
+            return dx * dx + dy * dy < restR2
+        }
+        let bh = y1 - y0
+        let grow = max(3, Int(0.6 * d) | 1), p = grow / 2
+        // rows the dilated head can reach
+        let r0 = max(0, y0 - p), r1 = min(H, y1 + p), rh = r1 - r0
+        var out: [(t: Double, vx: Double, vy: Double)] = []
+        let lo = max(1, kImp - 4), hi = kImp - 2
+        guard lo < hi, hi < clip.frames.count else { return [] }
+        for k in lo..<hi {
+            let px = clip.frames[k].pixels, prev = clip.frames[k - 1].pixels, nx = clip.frames[k + 1].pixels
+            var m = [Bool](repeating: false, count: bh * W)
+            for y in y0..<y1 {
+                for x in 0..<W {
+                    let i = y * W + x
+                    if abs(Int(px[i]) - Int(bg[i])) > 28 && abs(Int(px[i]) - Int(prev[i])) > 28 && !inRest(x, y) {
+                        m[(y - y0) * W + x] = true
+                    }
+                }
+            }
+            m = openMask(m, width: W, height: bh, k: shaft)
+            let cs = Blobs.find(mask: m, width: W, height: bh).filter { Double($0.area) >= 0.3 * d * d }
+            guard !cs.isEmpty else { continue }
+            // the head: everything moving within a head's length of the front-most part
+            let xa: Int, xb: Int
+            if dir > 0 {
+                let front = cs.map { $0.maxX }.max()!
+                xa = max(0, Int(Double(front) - 3 * d)); xb = min(W, front + 1)
+            } else {
+                let front = cs.map { $0.minX }.min()!
+                xa = max(0, front); xb = min(W, Int(Double(front) + 3 * d) + 1)
+            }
+            guard xa < xb else { continue }
+            // with a margin of background round it, so a plain (untextured) head is pinned by
+            // its outline; compared as differences from the background, ~0 off the head
+            var hm = [Bool](repeating: false, count: rh * W)
+            var count = 0
+            for y in y0..<y1 {
+                for x in xa..<xb where m[(y - y0) * W + x] { hm[(y - r0) * W + x] = true; count += 1 }
+            }
+            guard Double(count) >= 0.3 * d * d else { continue }
+            hm = dilateMask(hm, width: W, height: rh, k: grow)
+            var idx: [(x: Int, y: Int, v: Int)] = []
+            for y in r0..<r1 {
+                for x in 0..<W where hm[(y - r0) * W + x] && !inRest(x, y) {
+                    idx.append((x, y, Int(px[y * W + x]) - Int(bg[y * W + x])))
+                }
+            }
+            guard !idx.isEmpty else { continue }
+            func cost(_ dx: Int, _ dy: Int) -> Double? {
+                var sum = 0, n = 0
+                for q in idx {
+                    let X = q.x + dx, Y = q.y + dy
+                    guard X >= 0, X < W, Y >= 0, Y < H, !inRest(X, Y) else { continue }
+                    let i = Y * W + X
+                    sum += abs(Int(nx[i]) - Int(bg[i]) - q.v)
+                    n += 1
+                }
+                guard Double(n) >= 0.6 * Double(idx.count) else { return nil }
+                return Double(sum) / Double(n)
+            }
+            var best: (c: Double, dx: Int, dy: Int)?
+            let r = Int(1.5 * d)
+            for dy in stride(from: -r, through: r, by: 2) {          // coarse, then refine
+                for a in stride(from: Int(0.5 * d), to: Int(8 * d), by: 2) {
+                    if let c = cost(dir * a, dy), best == nil || c < best!.c { best = (c, dir * a, dy) }
+                }
+            }
+            guard var b = best else { continue }
+            let (cdx, cdy) = (b.dx, b.dy)
+            for dy in (cdy - 2)...(cdy + 2) {
+                for dx in (cdx - 2)...(cdx + 2) {
+                    if let c = cost(dx, dy), c < b.c { b = (c, dx, dy) }
+                }
+            }
+            let dt = clip.times[k + 1] - clip.times[k]
+            guard dt > 0 else { continue }
+            out.append(((clip.times[k] + clip.times[k + 1]) / 2, Double(b.dx) / dt, Double(b.dy) / dt))
+        }
+        return out
+    }
+
+    /// Binary dilation with a k × k square (k odd).
+    static func dilateMask(_ m: [Bool], width W: Int, height H: Int, k: Int) -> [Bool] {
+        guard k > 1 else { return m }
+        let p = k / 2
+        var a = [Bool](repeating: false, count: m.count)
+        for y in 0..<H {
+            for x in 0..<W where m[y * W + x] {
+                for yy in max(0, y - p)...min(H - 1, y + p) { a[yy * W + x] = true }
+            }
+        }
+        var b = [Bool](repeating: false, count: m.count)
+        for y in 0..<H {
+            for x in 0..<W where a[y * W + x] {
+                for xx in max(0, x - p)...min(W - 1, x + p) { b[y * W + xx] = true }
+            }
+        }
+        return b
     }
 
     /// Binary opening with a k × k square (k odd): removes anything thinner than k.

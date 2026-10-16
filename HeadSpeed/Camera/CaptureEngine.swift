@@ -660,11 +660,17 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
                 self.queue.async { self.disarm(resumeAfter: (self.energyTimes.last ?? 0) + 1.0) }
                 return
             }
-            if view == .rear && !result.hasMeasurement
+            if !result.hasMeasurement
                 && !Self.motionBeforeTrigger(eTimes, eVals, at: clip.times[min(max(clip.triggerIndex, 0), clip.times.count - 1)]) {
-                // Nothing measured and no fast motion before the "hit": the club was set down
-                // over the ball at address. Keep waiting instead of reporting a failed swing.
-                self.queue.async { self.resumeCovered(self.energyTimes.last ?? 0) }
+                // Nothing measured and no fast motion before the "hit": not a swing. From behind,
+                // the club was set down over the ball at address; keep waiting. Face-on, the lock
+                // was usually on something other than a ball (a white shoe or trouser leg) that
+                // shifted at address; look for the ball again instead of reporting a failed swing.
+                if view == .rear {
+                    self.queue.async { self.resumeCovered(self.energyTimes.last ?? 0) }
+                } else {
+                    self.queue.async { self.disarm(resumeAfter: (self.energyTimes.last ?? 0) + 0.5) }
+                }
                 return
             }
             DispatchQueue.main.async {
