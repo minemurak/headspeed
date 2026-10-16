@@ -57,8 +57,10 @@ def analyze(frames, times, ball, trig, club='1W', energy=None, pitch=0.0):
     y0 = max(0, int(by - 2.5*d)); y1 = min(H, int(by + 0.8*d))
     minCnt = max(2, int(round(0.2*d)))
     direction = None; pts = []
-    for k in range(max(0, kImp - 6), kImp):
-        diff = np.abs(F[k][y0:y1] - Bg[y0:y1]) > 28
+    for k in range(max(1, kImp - 6), kImp):
+        # only what is moving fast right now: different from the background AND from the
+        # previous frame (a golfer's foot or a shadow shifting slowly near the ball is not)
+        diff = (np.abs(F[k][y0:y1] - Bg[y0:y1]) > 28) & (np.abs(F[k][y0:y1] - F[k-1][y0:y1]) > 28)
         diff &= ~rest[y0:y1]
         cnt = diff.sum(axis=0)
         cols = np.nonzero(cnt >= minCnt)[0]
@@ -78,10 +80,16 @@ def analyze(frames, times, ball, trig, club='1W', energy=None, pitch=0.0):
             band = (xx[y0:y1] <= e + 0.5*d) & (xx[y0:y1] >= e) & diff
         ys = np.nonzero(band)[0]
         pts.append((times[k], float(e), float(ys.mean() + y0) if len(ys) else float('nan')))
-    # keep the last frames that advance monotonically toward the ball
+    # keep the last frames that advance monotonically toward the ball, at a steady pace
+    # (an earlier frame can catch the shaft crossing the band ahead of the head)
     clean = []
     for p in reversed(pts):
-        if not clean or (direction*(clean[-1][1] - p[1]) > 0.1*d): clean.append(p)
+        if clean and direction*(clean[-1][1] - p[1]) <= 0.1*d: continue
+        if len(clean) >= 2:
+            last = direction*(clean[-2][1] - clean[-1][1])/(clean[-2][0] - clean[-1][0])
+            step = direction*(clean[-1][1] - p[1])/(clean[-1][0] - p[0])
+            if not (0.6*last <= step <= 1.6*last): break
+        clean.append(p)
         if len(clean) == 4: break
     clean.reverse()
     mmpx = BALL_MM/d
