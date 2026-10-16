@@ -39,9 +39,8 @@ enum SwingAnalyzer {
             return out
         }
         let W = clip.frames[0].width, H = clip.frames[0].height
-        let bx = clip.ballX, by = clip.ballY, d = clip.ballD
+        var bx = clip.ballX, by = clip.ballY, d = clip.ballD
         let trig = clip.triggerIndex
-        let mmPerPx = ballDiameterMM / d
         // Looking down at the swing shrinks vertical motion by cos(pitch); divide it back out.
         let yCorr = 1 / cos(min(max(clip.cameraPitch, 0), 60 * .pi / 180))
 
@@ -56,6 +55,11 @@ enum SwingAnalyzer {
                 bg[i] = Int16(median5(&v))
             }
         }
+        if let sil = silhouette(clip, bg: bg, ball: (bx, by, d)), abs(sil.d / d - 1) > 0.1 {
+            // The finder saw only part of the ball (the lit side); every speed scales with d.
+            (bx, by, d) = (sil.x, sil.y, sil.d)
+        }
+        let mmPerPx = ballDiameterMM / d
 
         let restR2 = (0.75 * d) * (0.75 * d)
         let coreR2 = (0.35 * d) * (0.35 * d)
@@ -89,6 +93,7 @@ enum SwingAnalyzer {
         // 2. Head: leading edge of the moving region in a band at ball height.
         let y0 = max(0, Int(by - 2.5 * d)), y1 = min(H, Int(by + 0.8 * d))
         let minCnt = max(2, Int((0.2 * d).rounded(.toNearestOrEven)))
+        let shaft = max(3, Int(0.17 * d) | 1)   // odd, wider than the shaft
         var direction: Int?
         var pts: [(t: Double, e: Double, y: Double)] = []
         for k in max(1, kImp - 6)..<kImp {
@@ -102,10 +107,13 @@ enum SwingAnalyzer {
                     // from the previous frame (a foot or shadow shifting slowly is not).
                     if abs(Int(px[i]) - Int(bg[i])) > 28 && abs(Int(px[i]) - Int(prev[i])) > 28 && !inRest(x, y) {
                         band[(y - y0) * W + x] = true
-                        cnt[x] += 1
                     }
                 }
             }
+            // The shaft leans ahead of the head and crosses the band first: open the mask
+            // with a square wider than the shaft so only the head's bulk is left.
+            band = openMask(band, width: W, height: y1 - y0, k: shaft)
+            for y in 0..<(y1 - y0) { for x in 0..<W where band[y * W + x] { cnt[x] += 1 } }
             var anyCol = false, wsum = 0.0, csum = 0.0
             for x in 0..<W where cnt[x] >= minCnt {
                 anyCol = true
@@ -252,6 +260,67 @@ enum SwingAnalyzer {
             m.smash = nil
             m.notes.append("ミート率が範囲外です（ヘッドかボールの誤検出の可能性）")
         }
+    }
+
+    /// The ball's size and place from what is gone once it has left: the frames at the end of
+    /// the clip against the background, so a ball lit only on one side (its shaded part as
+    /// dark as the grass, invisible to a brightness search) still shows whole. Width across,
+    /// since the tee hangs below. Nil when the end frames are missing or the change there is
+    /// not a lone ball. Mirrors silhouette() in reference/analyzer.py.
+    static func silhouette(_ clip: SwingClip, bg: [Int16], ball: (Double, Double, Double)) -> (x: Double, y: Double, d: Double)? {
+        let (bx, by, d) = ball
+        let n = clip.frames.count, W = clip.frames[0].width, H = clip.frames[0].height
+        let first = clip.triggerIndex + 30
+        guard n - first >= 5 else { return nil }
+        let post = Array(max(first, n - 8)..<n)
+        let x0 = max(0, Int(bx - 2 * d)), x1 = min(W, Int(bx + 2 * d) + 1)
+        let y0 = max(0, Int(by - 2 * d)), y1 = min(H, Int(by + 2 * d) + 1)
+        let ww = x1 - x0, wh = y1 - y0
+        guard ww > 2, wh > 2 else { return nil }
+        var mask = [Bool](repeating: false, count: ww * wh)
+        var v = [Double](repeating: 0, count: post.count)
+        for y in y0..<y1 {
+            for x in x0..<x1 {
+                let i = y * W + x
+                for (j, k) in post.enumerated() { v[j] = Double(clip.frames[k].pixels[i]) }
+                v.sort()
+                let m = v.count % 2 == 1 ? v[v.count / 2] : (v[v.count / 2 - 1] + v[v.count / 2]) / 2
+                mask[(y - y0) * ww + (x - x0)] = abs(m - Double(bg[i])) > 25
+            }
+        }
+        let cx = bx - Double(x0), cy = by - Double(y0)
+        var hit: Blob?
+        for b in Blobs.find(mask: mask, width: ww, height: wh) where b.area >= 10 {
+            if Double(b.minX) <= cx && cx <= Double(b.maxX) && Double(b.minY) <= cy && cy <= Double(b.maxY),
+               hit == nil || b.area > hit!.area { hit = b }
+        }
+        guard let b = hit, b.minX > 0, b.minY > 0, b.maxX < ww - 1, b.maxY < wh - 1 else { return nil }
+        let w = Double(b.boxW)
+        guard w >= 0.5 * d, w <= 2.5 * d else { return nil }
+        return (Double(x0) + Double(b.minX + b.maxX) / 2, Double(y0) + Double(b.minY) + w / 2, w)
+    }
+
+    /// Binary opening with a k × k square (k odd): removes anything thinner than k.
+    static func openMask(_ m: [Bool], width W: Int, height H: Int, k: Int) -> [Bool] {
+        guard k > 1 else { return m }
+        let p = k / 2
+        func pass(_ a: [Bool], horizontal: Bool, all: Bool) -> [Bool] {
+            var out = [Bool](repeating: false, count: a.count)
+            for y in 0..<H {
+                for x in 0..<W {
+                    var r = all
+                    for o in -p...p {
+                        let xx = horizontal ? x + o : x, yy = horizontal ? y : y + o
+                        let v = xx >= 0 && xx < W && yy >= 0 && yy < H ? a[yy * W + xx] : false
+                        if all ? !v : v { r = !all; break }
+                    }
+                    out[y * W + x] = r
+                }
+            }
+            return out
+        }
+        let eroded = pass(pass(m, horizontal: false, all: true), horizontal: true, all: true)
+        return pass(pass(eroded, horizontal: false, all: false), horizontal: true, all: false)
     }
 
     /// Median of five values using a 9-comparator sorting network.
