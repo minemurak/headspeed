@@ -2,7 +2,8 @@ import Foundation
 
 /// Keeps each saved swing's exported files (see ClipExporter) next to its history record, so a
 /// swing can be exported again later from the history. swing.json is kept for every record;
-/// the movie only for the most recent `keepMovies` swings, since each one is tens of MB.
+/// the movie (and the lock frame) only for the most recent `keepMovies` swings, since each
+/// movie is tens of MB.
 enum SwingArchive {
     static let keepMovies = 10
 
@@ -34,7 +35,7 @@ enum SwingArchive {
     /// The files kept for record `id` (movie first), or empty.
     static func files(_ id: UUID) -> [URL] {
         let items = (try? FileManager.default.contentsOfDirectory(at: folder(id), includingPropertiesForKeys: nil)) ?? []
-        return items.filter { ["mov", "json"].contains($0.pathExtension.lowercased()) }
+        return items.filter { ["mov", "json", "jpg"].contains($0.pathExtension.lowercased()) }
             .sorted { $0.pathExtension.lowercased() == "mov" && $1.pathExtension.lowercased() != "mov" }
     }
 
@@ -56,7 +57,10 @@ enum SwingArchive {
             let created = (try? dir.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
             return (mov, created)
         }.sorted { $0.1 > $1.1 }
-        for (mov, _) in movies.dropFirst(keepMovies) { try? fm.removeItem(at: mov) }
+        for (mov, _) in movies.dropFirst(keepMovies) {
+            try? fm.removeItem(at: mov)
+            try? fm.removeItem(at: mov.deletingPathExtension().appendingPathExtension("jpg"))
+        }
     }
 
     private static func stamp(_ date: Date) -> String {

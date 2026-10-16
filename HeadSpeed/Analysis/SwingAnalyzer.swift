@@ -14,6 +14,17 @@ struct SwingClip {
     var focal = 0.0              // focal length, clip pixels (rear view only)
     var centerX = 0.0            // optical centre, clip pixels (rear view only)
     var centerY = 0.0
+    /// How the ball was locked, for the exported swing (diagnosis only).
+    var lock: LockInfo?
+
+    struct LockInfo {
+        var frameWidth: Int, frameHeight: Int     // full camera frame
+        var stripY0: Int, stripStep: Int          // strip row 0 = frame row stripY0; strip px = stripStep frame px
+        var fieldOfView: Double                   // horizontal, degrees
+        var kind: String                          // BallKind of the locked candidate
+        var seconds: Double                       // from first seeing the candidate to the lock
+        var frame: GrayImage?                     // the full frame at the lock
+    }
 }
 
 struct SwingMeasurement {
@@ -207,13 +218,17 @@ enum SwingAnalyzer {
             let xMax = dir > 0 ? W : Int(bx - 0.5 * d)       // exclusive
             let rowMin = max(0, Int(by - 14 * d)), rowMax = min(H, Int(by + 1.0 * d))
             for k in kImp..<min(n, kImp + 10) {
-                let px = clip.frames[k].pixels
+                let px = clip.frames[k].pixels, prev = clip.frames[max(0, k - 1)].pixels
                 var mask = [Bool](repeating: false, count: W * H)
                 if rowMin < rowMax && max(0, xMin) < min(W, xMax) {
                     for y in rowMin..<rowMax {
                         for x in max(0, xMin)..<min(W, xMax) {
                             let i = y * W + x
-                            if Int(px[i]) - Int(bg[i]) > thr && !inRest(x, y) { mask[i] = true }
+                            // Brighter than the background and changed since the previous frame:
+                            // the ball in flight moves several widths per frame, while a glove or
+                            // trouser leg that shifted at address sits still.
+                            if Int(px[i]) - Int(bg[i]) > thr && abs(Int(px[i]) - Int(prev[i])) > thr
+                                && !inRest(x, y) { mask[i] = true }
                         }
                     }
                 }

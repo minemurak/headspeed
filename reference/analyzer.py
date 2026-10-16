@@ -236,6 +236,10 @@ def analyze(frames, times, ball, trig, club='1W', energy=None, pitch=0.0):
         pts = []
         for k in range(kImp, min(n, kImp + 10)):
             diff = (F[k] - Bg) > thr
+            # and changed since the previous frame: the ball in flight moves several of its own
+            # widths per frame, while something that merely differs from the background (a glove
+            # or trouser leg that shifted at address) sits still and is not the ball
+            diff &= np.abs(F[k] - F[k - 1]) > thr
             diff &= ~rest
             if direction > 0: diff[:, :int(bx + 0.5*d)] = False
             else: diff[:, int(bx - 0.5*d):] = False

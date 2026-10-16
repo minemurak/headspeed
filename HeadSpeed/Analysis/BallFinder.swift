@@ -11,10 +11,16 @@ enum BallFinder {
     /// Coarse search on a downscaled frame. `guide` is (x0, y0, x1, y1) in 0…1.
     static func search(_ img: GrayImage, guide: (Double, Double, Double, Double),
                        minD: Double, maxD: Double) -> BallFix? {
+        searchAll(img, guide: guide, minD: minD, maxD: maxD).first
+    }
+
+    /// Every bright, round, compact blob above a percentile threshold, best (contrast × fill) first.
+    static func searchAll(_ img: GrayImage, guide: (Double, Double, Double, Double),
+                          minD: Double, maxD: Double) -> [BallFix] {
         let W = img.width, H = img.height
         let gx0 = max(0, Int(guide.0 * Double(W))), gx1 = min(W, Int(guide.2 * Double(W)))
         let gy0 = max(0, Int(guide.1 * Double(H))), gy1 = min(H, Int(guide.3 * Double(H)))
-        guard gx1 - gx0 > 8, gy1 - gy0 > 8 else { return nil }
+        guard gx1 - gx0 > 8, gy1 - gy0 > 8 else { return [] }
 
         var hist = [Int](repeating: 0, count: 256)
         for y in gy0..<gy1 { for x in gx0..<gx1 { hist[Int(img.pixels[y * W + x])] += 1 } }
@@ -29,7 +35,7 @@ enum BallFinder {
         var mask = [Bool](repeating: false, count: W * H)
         for y in gy0..<gy1 { for x in gx0..<gx1 where Int(img.pixels[y * W + x]) >= thr { mask[y * W + x] = true } }
 
-        var best: (fix: BallFix, score: Double)?
+        var found: [(fix: BallFix, score: Double)] = []
         for b in Blobs.find(mask: mask, width: W, height: H) {
             let d = 2 * (Double(b.area) / .pi).squareRoot()
             guard d >= minD, d <= maxD else { continue }
@@ -39,10 +45,9 @@ enum BallFinder {
             let ring = meanIn(img, cx: b.cx, cy: b.cy, r0: d * 0.8, r1: d * 1.6)
             let contrast = inside - ring
             guard contrast >= 40 else { continue }
-            let score = contrast * b.fill
-            if best == nil || score > best!.score { best = (BallFix(x: b.cx, y: b.cy, d: d), score) }
+            found.append((BallFix(x: b.cx, y: b.cy, d: d), contrast * b.fill))
         }
-        return best?.fix
+        return stableSorted(found) { $0.score > $1.score }.map { $0.fix }
     }
 
     /// Sub-pixel refinement on a full-resolution crop around an approximate fix.
@@ -83,11 +88,18 @@ enum BallFinder {
     static func searchRear(_ img: GrayImage, guide: (Double, Double, Double, Double),
                            minD: Double, maxD: Double, anchor: (Double, Double),
                            edgeMin: Double = 10) -> BallFix? {
+        searchRearAll(img, guide: guide, minD: minD, maxD: maxD, anchor: anchor, edgeMin: edgeMin).first
+    }
+
+    /// Every circle that passes the outline check, best (by the key above) first.
+    static func searchRearAll(_ img: GrayImage, guide: (Double, Double, Double, Double),
+                              minD: Double, maxD: Double, anchor: (Double, Double),
+                              edgeMin: Double = 10) -> [BallFix] {
         let W = img.width, H = img.height
         let gx0 = max(0, Int(guide.0 * Double(W))), gx1 = min(W, Int(guide.2 * Double(W)))
         let gy0 = max(0, Int(guide.1 * Double(H))), gy1 = min(H, Int(guide.3 * Double(H)))
         let gw = gx1 - gx0, gh = gy1 - gy0
-        guard gw > 8, gh > 8 else { return nil }
+        guard gw > 8, gh > 8 else { return [] }
         let (gx, gy) = sobel(img)
         var mag = [Double](repeating: 0, count: W * H)
         for i in 0..<(W * H) { mag[i] = hypot(gx[i], gy[i]) }
@@ -107,8 +119,9 @@ enum BallFinder {
             for i in 0..<acc.count { acc[i] = 0; a3[i] = 0 }
             for k in 0..<ex.count {
                 for s in [1.0, -1.0] {
-                    let cx = Int((Double(ex[k]) + s * r * nx[k]).rounded()) - gx0
-                    let cy = Int((Double(ey[k]) + s * r * ny[k]).rounded()) - gy0
+                    // half to even, as the reference (r steps by halves, so exact halves are common)
+                    let cx = Int((Double(ex[k]) + s * r * nx[k]).rounded(.toNearestOrEven)) - gx0
+                    let cy = Int((Double(ey[k]) + s * r * ny[k]).rounded(.toNearestOrEven)) - gy0
                     if cx >= 0, cx < gw, cy >= 0, cy < gh { acc[cy * gw + cx] += 1 }
                 }
             }
@@ -134,16 +147,16 @@ enum BallFinder {
             }
             r += 1
         }
-        cands.sort { $0.score > $1.score }
-        var best: (fix: BallFix, key: Double)?
+        // as the reference's tuple sort: score, then x, y, r, all descending
+        cands.sort { ($0.score, $0.x, $0.y, $0.r) > ($1.score, $1.x, $1.y, $1.r) }
+        var found: [(fix: BallFix, key: Double)] = []
         for c in cands.prefix(60) {
             let cov = coverage(gx, gy, mag, width: W, height: H, cx: Double(c.x), cy: Double(c.y), r: c.r, edgeMin: edgeMin)
             guard cov >= 0.75 else { continue }
             let dist = hypot(Double(c.x) / Double(W) - anchor.0, Double(c.y) / Double(H) - anchor.1)
-            let key = cov * min(1, c.r / minD) / (1 + 3 * dist)
-            if best == nil || key > best!.key { best = (BallFix(x: Double(c.x), y: Double(c.y), d: 2 * c.r), key) }
+            found.append((BallFix(x: Double(c.x), y: Double(c.y), d: 2 * c.r), cov * min(1, c.r / minD) / (1 + 3 * dist)))
         }
-        return best?.fix
+        return stableSorted(found) { $0.key > $1.key }.map { $0.fix }
     }
 
     /// Share of directions (tee side skipped) with a radial edge on the circle.
@@ -156,7 +169,7 @@ enum BallFinder {
             let ux = cos(a), uy = sin(a)
             n += 1
             for dr in [0.0, -1, 1, -1.5, 1.5] {
-                let x = Int((cx + ux * (r + dr)).rounded()), y = Int((cy + uy * (r + dr)).rounded())
+                let x = Int((cx + ux * (r + dr)).rounded(.toNearestOrEven)), y = Int((cy + uy * (r + dr)).rounded(.toNearestOrEven))
                 guard x >= 0, x < W, y >= 0, y < H else { continue }
                 let i = y * W + x, m = mag[i]
                 if m >= edgeMin && abs(gx[i] * ux + gy[i] * uy) >= 0.93 * m { hit += 1; break }
@@ -265,10 +278,18 @@ enum BallFinder {
     /// without, the lowest strong one (face-on, the ball lies in front of the feet).
     static func searchLit(_ img: GrayImage, guide: (Double, Double, Double, Double),
                           minD: Double, maxD: Double, anchor: (Double, Double)?) -> BallFix? {
+        searchLitAll(img, guide: guide, minD: minD, maxD: maxD, anchor: anchor).first
+    }
+
+    /// Every candidate that passes the shape check, in the order searchLit prefers them: with an
+    /// anchor, by strength over distance; without, the strong ones (≥ 0.8 × the strongest)
+    /// lowest first, then the rest by strength.
+    static func searchLitAll(_ img: GrayImage, guide: (Double, Double, Double, Double),
+                             minD: Double, maxD: Double, anchor: (Double, Double)?) -> [BallFix] {
         let W = img.width, H = img.height
         let gx0 = max(0, Int(guide.0 * Double(W))), gx1 = min(W, Int(guide.2 * Double(W)))
         let gy0 = max(0, Int(guide.1 * Double(H))), gy1 = min(H, Int(guide.3 * Double(H)))
-        guard gx1 - gx0 > 8, gy1 - gy0 > 8 else { return nil }
+        guard gx1 - gx0 > 8, gy1 - gy0 > 8 else { return [] }
         var I = [Double](repeating: 0, count: (W + 1) * (H + 1))
         for y in 0..<H {
             var row = 0.0
@@ -304,7 +325,7 @@ enum BallFinder {
                 }
             }
         }
-        cands.sort { $0.s > $1.s }
+        cands.sort { ($0.s, $0.x, $0.y, $0.r) > ($1.s, $1.x, $1.y, $1.r) }
         var valid: [(s: Double, fix: BallFix)] = []
         for c in cands.prefix(40) {
             let w = Int((2.5 * Double(c.r)).rounded(.up))
@@ -328,14 +349,16 @@ enum BallFinder {
             guard d >= minD, d <= maxD else { continue }
             valid.append((c.s, BallFix(x: Double(x0) + b.cx, y: Double(y0) + b.cy, d: d)))
         }
-        guard let top = valid.map({ $0.s }).max() else { return nil }
+        guard let top = valid.map({ $0.s }).max() else { return [] }
         if let a = anchor {
             func key(_ v: (s: Double, fix: BallFix)) -> Double {
                 v.s / (1 + 3 * hypot(v.fix.x / Double(W) - a.0, v.fix.y / Double(H) - a.1))
             }
-            return valid.max { key($0) < key($1) }?.fix
+            return stableSorted(valid) { key($0) > key($1) }.map { $0.fix }
         }
-        return valid.filter { $0.s >= 0.8 * top }.max { $0.fix.y < $1.fix.y }?.fix
+        let strong = stableSorted(valid.filter { $0.s >= 0.8 * top }) { $0.fix.y > $1.fix.y }
+        let rest = stableSorted(valid.filter { $0.s < 0.8 * top }) { $0.s > $1.s }
+        return (strong + rest).map { $0.fix }
     }
 
     /// Only the lit arc has a real outline (the shaded side's edge is lost in the grass
@@ -348,6 +371,15 @@ enum BallFinder {
             }
         }
         return nil
+    }
+
+    /// Sort that keeps equal elements in their original order (as Python's sort does).
+    static func stableSorted<T>(_ v: [T], by less: (T, T) -> Bool) -> [T] {
+        v.enumerated().sorted { a, b in
+            if less(a.element, b.element) { return true }
+            if less(b.element, a.element) { return false }
+            return a.offset < b.offset
+        }.map { $0.element }
     }
 
     private static func median(_ v: [Double]) -> Double {
