@@ -19,6 +19,7 @@ targets:
         CFBundleDisplayName: ヘッドスピード
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSPhotoLibraryAddUsageDescription: 計測したスイングの映像をカメラロールに保存します。
         NSCameraUsageDescription: スイングを240fpsで撮影し、ヘッドスピードとミート率を自動で計測します。
         UISupportedInterfaceOrientations: [UIInterfaceOrientationLandscapeRight]
         UIRequiresFullScreen: true

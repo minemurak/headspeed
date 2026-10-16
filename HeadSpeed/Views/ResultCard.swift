@@ -6,6 +6,9 @@ struct ResultCard: View {
     /// Files of this swing's clip to share (empty while they are still being written).
     var clipFiles: [URL] = []
 
+    private enum SaveState: Equatable { case idle, saving, saved, denied, failed }
+    @State private var saveState: SaveState = .idle
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -48,13 +51,27 @@ struct ResultCard: View {
                 Label(note, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
             }
             if !clipFiles.isEmpty {
-                ShareLink(items: clipFiles) {
-                    Label("このスイングの映像を書き出す", systemImage: "square.and.arrow.up").font(.caption)
+                HStack(spacing: 16) {
+                    ShareLink(items: clipFiles) {
+                        Label("このスイングの映像を書き出す", systemImage: "square.and.arrow.up").font(.caption)
+                    }
+                    if let movie = clipFiles.first(where: { $0.pathExtension.lowercased() == "mov" }) {
+                        Button { saveToPhotos(movie) } label: {
+                            Label(saveLabel, systemImage: saveState == .saved ? "checkmark.circle" : "photo.on.rectangle")
+                                .font(.caption)
+                        }
+                        .disabled(saveState == .saving || saveState == .saved)
+                    }
+                }
+                if saveState == .denied {
+                    Text("写真への追加が許可されていません。設定 > ヘッドスピード > 写真 で「写真を追加のみ」を許可してください。")
+                        .font(.caption2).foregroundStyle(.orange)
                 }
             }
         }
         .padding(16)
         .frame(width: 380)
+        .onChange(of: clipFiles) { _ in saveState = .idle }
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
         .overlay(alignment: .topTrailing) {
             if let onClose {
@@ -68,6 +85,29 @@ struct ResultCard: View {
                 }
                 .offset(x: 12, y: -12)
                 .accessibilityLabel("結果を閉じる")
+            }
+        }
+    }
+
+    private var saveLabel: String {
+        switch saveState {
+        case .idle, .denied: return "カメラロールに保存"
+        case .saving: return "保存中…"
+        case .saved: return "保存しました"
+        case .failed: return "保存に失敗（再試行）"
+        }
+    }
+
+    private func saveToPhotos(_ url: URL) {
+        saveState = .saving
+        Task { @MainActor in
+            do {
+                try await PhotoSaver.saveVideo(at: url)
+                saveState = .saved
+            } catch PhotoSaver.Failure.denied {
+                saveState = .denied
+            } catch {
+                saveState = .failed
             }
         }
     }
