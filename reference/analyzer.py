@@ -24,12 +24,47 @@ def components(mask):
         out.append(c)
     return out
 
+def open_mask(m, k):
+    """Binary opening with a k x k square: removes anything thinner than k (a shaft)."""
+    if k <= 1: return m
+    from numpy.lib.stride_tricks import sliding_window_view as sw
+    p = k//2
+    def run(a, axis, f):
+        pad = np.pad(a, [(p, p) if i == axis else (0, 0) for i in range(2)], constant_values=False)
+        return f(sw(pad, k, axis=axis), axis=-1)
+    e = run(run(m, 0, np.all), 1, np.all)
+    return run(run(e, 0, np.any), 1, np.any)
+
 def linfit(t, v):
     t = np.asarray(t, float); v = np.asarray(v, float)
     tm = t.mean(); vm = v.mean()
     den = ((t - tm)**2).sum()
     slope = ((t - tm)*(v - vm)).sum()/den
     return slope, vm - slope*tm
+
+def silhouette(F, Bg, ball, trig):
+    """The ball's size and place from what is gone once it has left: the frames at the end of the
+    clip against the background, so a ball lit only on one side (its shaded part as dark as the
+    grass, invisible to a brightness search) still shows whole. Width across, since the tee
+    hangs below. None when the end frames are missing or the change there is not a lone ball."""
+    bx, by, d = ball
+    post = list(range(trig + 30, len(F)))[-8:]
+    if len(post) < 5: return None
+    H, W = Bg.shape
+    x0, x1 = max(0, int(bx - 2*d)), min(W, int(bx + 2*d) + 1)
+    y0, y1 = max(0, int(by - 2*d)), min(H, int(by + 2*d) + 1)
+    P = np.median(np.stack([F[k][y0:y1, x0:x1] for k in post]), axis=0)
+    m = np.abs(P - Bg[y0:y1, x0:x1]) > 25
+    hit = None
+    for c in components(m):
+        if c['area'] < 10: continue
+        if c['minx'] <= bx - x0 <= c['maxx'] and c['miny'] <= by - y0 <= c['maxy']:
+            if hit is None or c['area'] > hit['area']: hit = c
+    if hit is None or hit['minx'] == 0 or hit['miny'] == 0 or hit['maxx'] == x1 - x0 - 1 or hit['maxy'] == y1 - y0 - 1:
+        return None
+    w = hit['maxx'] - hit['minx'] + 1
+    if not (0.5*d <= w <= 2.5*d): return None
+    return x0 + (hit['minx'] + hit['maxx'])/2, y0 + hit['miny'] + w/2, float(w)
 
 def analyze(frames, times, ball, trig, club='1W', energy=None, pitch=0.0):
     # pitch: degrees the camera looks down (face-on from above); image vertical motion is
@@ -42,6 +77,11 @@ def analyze(frames, times, ball, trig, club='1W', energy=None, pitch=0.0):
     # background: median of frames well before impact
     idx = [max(0, trig - o) for o in (110, 95, 80, 65, 50)]
     Bg = np.median(np.stack([F[i] for i in idx]), axis=0).astype(np.int16)
+    sil = silhouette(F, Bg, ball, trig)
+    if sil and abs(sil[2]/d - 1) > 0.1:
+        # the finder saw only part of the ball (the lit side); every speed scales with d
+        bx, by, d = sil
+        res['ballCorrected'] = sil
     yy, xx = np.mgrid[0:H, 0:W]
     core = ((xx - bx)**2 + (yy - by)**2) < (0.35*d)**2
     # 1. impact frame: first frame whose ball core differs from background
@@ -57,11 +97,14 @@ def analyze(frames, times, ball, trig, club='1W', energy=None, pitch=0.0):
     y0 = max(0, int(by - 2.5*d)); y1 = min(H, int(by + 0.8*d))
     minCnt = max(2, int(round(0.2*d)))
     direction = None; pts = []
+    shaft = max(3, int(0.17*d) | 1)   # odd, wider than the shaft
     for k in range(max(1, kImp - 6), kImp):
         # only what is moving fast right now: different from the background AND from the
         # previous frame (a golfer's foot or a shadow shifting slowly near the ball is not)
         diff = (np.abs(F[k][y0:y1] - Bg[y0:y1]) > 28) & (np.abs(F[k][y0:y1] - F[k-1][y0:y1]) > 28)
         diff &= ~rest[y0:y1]
+        # the shaft leans ahead of the head and crosses the band first: keep only the head's bulk
+        diff = open_mask(diff, shaft)
         cnt = diff.sum(axis=0)
         cols = np.nonzero(cnt >= minCnt)[0]
         if len(cols) == 0: continue

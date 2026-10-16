@@ -63,3 +63,5 @@ jobs:
         working-directory: reference
       - run: python test_front_ball.py
         working-directory: reference
+      - run: python test_front_halflit.py
+        working-directory: reference
