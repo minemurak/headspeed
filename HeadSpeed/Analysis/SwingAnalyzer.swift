@@ -176,6 +176,7 @@ enum SwingAnalyzer {
         }
         clean.reverse()
         var headPxS: Double?
+        var tContact: Double?
         if clean.count >= 2 {
             let t = clean.map { $0.t }
             var vx = linearFit(t, clean.map { $0.e }).slope
@@ -186,7 +187,8 @@ enum SwingAnalyzer {
             let eMean = clean.map { $0.e }.reduce(0, +) / Double(clean.count)
             let intercept = eMean - vx * tMean
             let eContact = bx - Double(dir) * 0.5 * d
-            let tContact = vx != 0 ? (eContact - intercept) / vx : tMean
+            let tC = vx != 0 ? (eContact - intercept) / vx : tMean
+            if vx != 0 { tContact = tC }
             // The head's whole-body displacement over the last frames, when it agrees roughly.
             let hm = headMatch(clip, bg: bg, ball: (bx, by, d), band: (y0, y1), kImp: kImp, dir: dir, shaft: shaft)
             if !hm.isEmpty, vx != 0 {
@@ -205,7 +207,7 @@ enum SwingAnalyzer {
             out.headSpeed = hs
             // The fitted line is a chord of the swing arc: rotate it to the tangent at contact.
             let chord = atan2(-vy, abs(vx)) * 180 / .pi
-            out.attack = chord + (hs / club.swingRadius) * (tContact - tMean) * 180 / .pi
+            out.attack = chord + (hs / club.swingRadius) * (tC - tMean) * 180 / .pi
         } else {
             out.notes.append("ヘッドを検出できませんでした")
         }
@@ -244,28 +246,48 @@ enum SwingAnalyzer {
             }
             return found
         }
-        var bpts = findBall(thr: 35, maxArea: 4.0, maxSide: 3.5, minFill: 0.45)
-        if bpts.count < 2 {
+        func forward(_ pts: [(t: Double, x: Double, y: Double)]) -> [(t: Double, x: Double, y: Double)] {
+            var kept: [(t: Double, x: Double, y: Double)] = []
+            for p in pts where kept.isEmpty || Double(dir) * (p.x - kept[kept.count - 1].x) > 0.3 * d { kept.append(p) }
+            return Array(kept.prefix(4))
+        }
+        let strict = findBall(thr: 35, maxArea: 4.0, maxSide: 3.5, minFill: 0.45)
+        var cleanB = forward(strict)
+        if strict.count < 2 {
             // Slow shutter: the ball is a long, faint streak.
-            bpts = findBall(thr: 12, maxArea: 12.0, maxSide: 10.0, minFill: 0.25)
-            if bpts.count >= 2 { out.notes.append("シャッターが遅くボールがブレています（精度低下）") }
+            let loose = forward(findBall(thr: 12, maxArea: 12.0, maxSide: 10.0, minFill: 0.25))
+            if loose.count >= 2 {
+                cleanB = loose
+                out.notes.append("シャッターが遅くボールがブレています（精度低下）")
+            }
         }
-        var cleanB: [(t: Double, x: Double, y: Double)] = []
-        for p in bpts where cleanB.isEmpty || Double(dir) * (p.x - cleanB[cleanB.count - 1].x) > 0.3 * d {
-            cleanB.append(p)
-        }
-        if cleanB.count > 4 { cleanB = Array(cleanB.prefix(4)) }
-        var ballPxS: Double?
+        let steps = zip(clip.times.dropFirst(), clip.times).map { $0 - $1 }.sorted()
+        let dtFrame = steps[steps.count / 2]
+        var ballV: (vx: Double, vy: Double)?
         if cleanB.count >= 2 {
             let t = cleanB.map { $0.t }
-            let vx = linearFit(t, cleanB.map { $0.x }).slope
-            let vy = linearFit(t, cleanB.map { $0.y }).slope * yCorr
-            let pxs = hypot(vx, vy)
-            ballPxS = pxs
-            out.ballSpeed = pxs * mmPerPx / 1000
-            out.launch = atan2(-vy, abs(vx)) * 180 / .pi
+            ballV = (linearFit(t, cleanB.map { $0.x }).slope, linearFit(t, cleanB.map { $0.y }).slope * yCorr)
+        } else if let p = cleanB.first, let tC = tContact, p.t - tC >= 0.3 * dtFrame, p.t - tC <= 2.5 * dtFrame,
+                  Double(dir) * (p.x - bx) > d {
+            // One flight frame only (the ball left the picture straight away): it left the tee
+            // when the head reached it, so take the displacement from there.
+            let vx = (p.x - bx) / (p.t - tC)
+            ballV = (vx, (p.y - by) / (p.t - tC) * yCorr)
+            let next = p.x + vx * dtFrame
+            if next >= 0 && next < Double(W) {
+                out.notes.append("ボールが1コマしか写らず推定値です（精度低下）")
+            } else {
+                out.notes.append("ボールがすぐ画面外に出たため1コマから推定しました（精度低下）。ボールを画面の中央寄りに置いてください")
+            }
         } else {
             out.notes.append("打ち出したボールを追跡できませんでした")
+        }
+        var ballPxS: Double?
+        if let v = ballV {
+            let pxs = hypot(v.vx, v.vy)
+            ballPxS = pxs
+            out.ballSpeed = pxs * mmPerPx / 1000
+            out.launch = atan2(-v.vy, abs(v.vx)) * 180 / .pi
         }
 
         if let h = headPxS, let b = ballPxS, h > 0 { out.smash = b / h }

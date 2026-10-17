@@ -158,7 +158,7 @@ def analyze(frames, times, ball, trig, club='1W', energy=None, pitch=0.0):
     # 2. head: leading edge of the dark moving region in a band around the ball height
     y0 = max(0, int(by - 2.5*d)); y1 = min(H, int(by + 0.8*d))
     minCnt = max(2, int(round(0.2*d)))
-    direction = None; pts = []
+    direction = None; pts = []; tContact = None
     shaft = max(3, int(0.17*d) | 1)   # odd, wider than the shaft
     for k in range(max(1, kImp - 6), kImp):
         # only what is moving fast right now: different from the background AND from the
@@ -255,24 +255,40 @@ def analyze(frames, times, ball, trig, club='1W', energy=None, pitch=0.0):
                 if best is None or direction*cx > direction*best[0]: best = (cx, cy)
             if best: pts.append((times[k], best[0], best[1]))
         return pts
-    bpts = find_ball(35, 4.0, 3.5, 0.45)
-    if len(bpts) < 2:   # slow shutter: the ball is a long, faint streak
-        bpts = find_ball(12, 12.0, 10.0, 0.25)
-        if len(bpts) >= 2: res['notes'].append('シャッターが遅くボールがブレています（精度低下）')
-    # enforce forward progression
-    cleanb = []
-    for p in bpts:
-        if not cleanb or direction*(p[1] - cleanb[-1][1]) > 0.3*d: cleanb.append(p)
-    cleanb = cleanb[:4]
+    def forward(pts):
+        kept = []
+        for p in pts:
+            if not kept or direction*(p[1] - kept[-1][1]) > 0.3*d: kept.append(p)
+        return kept[:4]
+    strict = find_ball(35, 4.0, 3.5, 0.45)
+    cleanb = forward(strict)
+    if len(strict) < 2:   # slow shutter: the ball is a long, faint streak
+        loose = forward(find_ball(12, 12.0, 10.0, 0.25))
+        if len(loose) >= 2:
+            cleanb = loose
+            res['notes'].append('シャッターが遅くボールがブレています（精度低下）')
+    dtFrame = float(np.median(np.diff(times)))
     if len(cleanb) >= 2:
         t = [p[0] for p in cleanb]
         vx, _ = linfit(t, [p[1] for p in cleanb]); vy, _ = linfit(t, [p[2] for p in cleanb]); vy *= ycorr
+        res['ballFrames'] = len(cleanb)
+    elif cleanb and tContact is not None and \
+            0.3*dtFrame <= cleanb[0][0] - tContact <= 2.5*dtFrame and direction*(cleanb[0][1] - bx) > d:
+        # one flight frame only (the ball left the picture straight away): it left the tee
+        # when the head reached it, so take the displacement from there
+        tb, xb, yb = cleanb[0]
+        vx = (xb - bx)/(tb - tContact); vy = (yb - by)/(tb - tContact)*ycorr
+        res['ballFrames'] = 1
+        if 0 <= xb + vx*dtFrame < W:
+            res['notes'].append('ボールが1コマしか写らず推定値です（精度低下）')
+        else:
+            res['notes'].append('ボールがすぐ画面外に出たため1コマから推定しました（精度低下）。ボールを画面の中央寄りに置いてください')
+    else:
+        res['notes'].append('打ち出したボールを追跡できませんでした')
+    if 'ballFrames' in res:
         res['ballPxS'] = math.hypot(vx, vy)
         res['bs'] = res['ballPxS']*mmpx/1000
         res['launch'] = math.degrees(math.atan2(-vy, abs(vx)))
-        res['ballFrames'] = len(cleanb)
-    else:
-        res['notes'].append('打ち出したボールを追跡できませんでした')
     if 'hs' in res and 'bs' in res:
         res['smash'] = res['ballPxS']/res['headPxS']
         res['ok'] = True
