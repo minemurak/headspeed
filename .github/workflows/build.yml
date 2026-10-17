@@ -69,6 +69,8 @@ jobs:
         working-directory: reference
       - run: python test_front_static.py
         working-directory: reference
+      - run: python test_front_edge.py
+        working-directory: reference
       - run: python test_balllock.py
         working-directory: reference
 
