@@ -472,7 +472,8 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
         // head comes down from high in the frame (at half resolution for a 1080p format).
         let rear = armedView == .rear
         let y0 = rear ? 0 : max(0, Int(fix.y - 14 * fix.d))
-        let y1 = min(frameH, Int(fix.y + 3 * fix.d))
+        // From above, a ball starting away from the golfer goes down the picture: more below.
+        let y1 = min(frameH, Int(fix.y + (armedView == .overhead ? 5 : 3) * fix.d))
         let rows = y1 - y0
         let budget = rear ? 520_000 : 460_000
         var step = 1
@@ -686,6 +687,7 @@ extension CaptureEngine: AVCaptureVideoDataOutputSampleBufferDelegate {
             clip.centerX = Double(frameW) / 2 / Double(g.step)
             clip.centerY = (Double(frameH) / 2 - Double(g.y0)) / Double(g.step)
         }
+        clip.overhead = view == .overhead
         let eTimes = energyTimes, eVals = energyVals
         let shutter = armedShutter
         lock.lock(); let club = clubValue; lock.unlock()

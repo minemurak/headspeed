@@ -11,6 +11,7 @@ struct SwingClip {
     let triggerIndex: Int        // first frame where the ball patch changed
     var cameraPitch = 0.0        // radians the camera looks down
     var rear = false             // filmed from behind the golfer (down the line)
+    var overhead = false         // face-on from well above: speeds from the along-target motion only
     var focal = 0.0              // focal length, clip pixels (rear view only)
     var centerX = 0.0            // optical centre, clip pixels (rear view only)
     var centerY = 0.0
@@ -38,8 +39,12 @@ struct SwingMeasurement {
 }
 
 /// Fully automatic face-on analysis. Mirrors reference/analyzer.py, which is
-/// validated against synthetic 240fps swings (reference/test.py). sanityCheck is
-/// an extra app-only guard that drops physically impossible values.
+/// validated against synthetic 240fps swings (reference/test.py, test_overhead.py). sanityCheck
+/// is an extra app-only guard that drops physically impossible values.
+///
+/// Overhead (上から): face-on looking down steeply. The image's vertical motion then mixes
+/// rising with moving toward or away from the camera, so only the horizontal (along the target
+/// line) motion is used, and no launch or attack angle is given.
 enum SwingAnalyzer {
     static func analyze(_ clip: SwingClip, club: Club) -> SwingMeasurement {
         if clip.rear { return RearAnalyzer.analyze(clip, club: club) }
@@ -201,13 +206,24 @@ enum SwingAnalyzer {
                     tMean = hm.map { $0.t }.reduce(0, +) / Double(hm.count)
                 }
             }
-            let pxs = hypot(vx, vy)
-            headPxS = pxs
-            let hs = pxs * mmPerPx / 1000
-            out.headSpeed = hs
-            // The fitted line is a chord of the swing arc: rotate it to the tangent at contact.
-            let chord = atan2(-vy, abs(vx)) * 180 / .pi
-            out.attack = chord + (hs / club.swingRadius) * (tC - tMean) * 180 / .pi
+            if clip.overhead {
+                // The head a few frames before contact still moves along the arc, tilted from
+                // the target line by the club's usual attack angle plus its turn until contact;
+                // its horizontal part is the speed times the cosine of that tilt.
+                let turn = abs(vx) * mmPerPx / 1000 / club.swingRadius * max(0, tC - tMean)
+                let th = min(25 * Double.pi / 180, turn - club.typicalAttack * .pi / 180)
+                let pxs = abs(vx) / cos(th)
+                headPxS = pxs
+                out.headSpeed = pxs * mmPerPx / 1000
+            } else {
+                let pxs = hypot(vx, vy)
+                headPxS = pxs
+                let hs = pxs * mmPerPx / 1000
+                out.headSpeed = hs
+                // The fitted line is a chord of the swing arc: rotate it to the tangent at contact.
+                let chord = atan2(-vy, abs(vx)) * 180 / .pi
+                out.attack = chord + (hs / club.swingRadius) * (tC - tMean) * 180 / .pi
+            }
         } else {
             out.notes.append("ヘッドを検出できませんでした")
         }
@@ -218,7 +234,8 @@ enum SwingAnalyzer {
             var found: [(t: Double, x: Double, y: Double)] = []
             let xMin = dir > 0 ? Int(bx + 0.5 * d) : 0
             let xMax = dir > 0 ? W : Int(bx - 0.5 * d)       // exclusive
-            let rowMin = max(0, Int(by - 14 * d)), rowMax = min(H, Int(by + 1.0 * d))
+            // from above, a ball starting away from the golfer (toward the camera) goes down
+            let rowMin = max(0, Int(by - 14 * d)), rowMax = min(H, Int(by + (clip.overhead ? 4.0 : 1.0) * d))
             for k in kImp..<min(n, kImp + 10) {
                 let px = clip.frames[k].pixels, prev = clip.frames[max(0, k - 1)].pixels
                 var mask = [Bool](repeating: false, count: W * H)
@@ -284,10 +301,10 @@ enum SwingAnalyzer {
         }
         var ballPxS: Double?
         if let v = ballV {
-            let pxs = hypot(v.vx, v.vy)
+            let pxs = clip.overhead ? abs(v.vx) / cos(club.typicalLaunch * .pi / 180) : hypot(v.vx, v.vy)
             ballPxS = pxs
             out.ballSpeed = pxs * mmPerPx / 1000
-            out.launch = atan2(-v.vy, abs(v.vx)) * 180 / .pi
+            if !clip.overhead { out.launch = atan2(-v.vy, abs(v.vx)) * 180 / .pi }
         }
 
         if let h = headPxS, let b = ballPxS, h > 0 { out.smash = b / h }

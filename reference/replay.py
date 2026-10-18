@@ -24,7 +24,7 @@ def main(mov, meta):
     else:
         from analyzer import analyze
         res = analyze(frames, times, ball, info['triggerIndex'], club=info['club'],
-                      pitch=math.degrees(info['cameraPitch']))
+                      pitch=math.degrees(info['cameraPitch']), overhead=info.get('overhead', False))
     print('frames', len(frames), f'{frames[0].shape[1]}x{frames[0].shape[0]}',
           'fps %.1f' % (1/np.median(np.diff(times))), 'trigger', info['triggerIndex'], 'ball', ball)
     from shake import camera_moved
