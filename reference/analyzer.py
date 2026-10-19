@@ -3,6 +3,11 @@ import numpy as np, math
 
 BALL_MM = 42.67
 CLUB_RADIUS_M = {'1W': 1.6, 'FW': 1.55, 'UT': 1.5, '7I': 1.4, 'W': 1.3}
+# typical launch angle (deg) per club: from above, only the along-target part of the ball's
+# motion is trusted, and the full speed is that over cos(launch)
+CLUB_LAUNCH_DEG = {'1W': 13.0, 'FW': 12.0, 'UT': 14.0, '7I': 17.0, 'W': 27.0}
+# and typical attack angle (deg, down negative): the head's tilt at contact, unseen from above
+CLUB_ATTACK_DEG = {'1W': 0.0, 'FW': -2.0, 'UT': -3.0, '7I': -4.0, 'W': -5.0}
 
 def components(mask):
     """4-neighbour connected components -> list of dict(area, sx, sy, minx, maxx, miny, maxy)."""
@@ -128,9 +133,12 @@ def head_match(F, Bg, times, ball, band, kImp, direction, shaft):
         out.append(((times[k] + times[k + 1])/2, best[1]/dt, best[2]/dt))
     return out
 
-def analyze(frames, times, ball, trig, club='1W', energy=None, pitch=0.0):
+def analyze(frames, times, ball, trig, club='1W', energy=None, pitch=0.0, overhead=False):
     # pitch: degrees the camera looks down (face-on from above); image vertical motion is
-    # the true vertical motion times cos(pitch), so divide it back out
+    # the true vertical motion times cos(pitch), so divide it back out.
+    # overhead: filmed face-on from well above (looking down steeply). Image vertical motion
+    # then mixes rising with moving toward or away from the camera, so only the horizontal
+    # (along the target line) motion is used: no launch or attack angle.
     ycorr = 1/math.cos(math.radians(min(max(pitch, 0.0), 60.0)))
     bx, by, d = ball
     n = len(frames); H, W = frames[0].shape
@@ -221,10 +229,19 @@ def analyze(frames, times, ball, trig, club='1W', energy=None, pitch=0.0):
                 res['headPxS'] = math.hypot(vx, vy)
                 res['hs'] = res['headPxS']*mmpx/1000
                 res['headMatched'] = len(hm)
-        chord = math.degrees(math.atan2(-vy, abs(vx)))
-        # the fitted line is a chord of the swing arc: rotate to the tangent at contact
         R = CLUB_RADIUS_M.get(club, 1.5)
-        res['attack'] = chord + math.degrees((res['hs']/R)*(tContact - tMid))
+        if overhead:
+            # the head a few frames before contact still moves along the arc, tilted from the
+            # target line by the club's usual attack angle plus its turn until contact; its
+            # horizontal part is the speed times the cosine of that tilt
+            th = (abs(vx)*mmpx/1000/R)*max(0.0, tContact - tMid) - math.radians(CLUB_ATTACK_DEG.get(club, 0.0))
+            th = min(math.radians(25), th)
+            res['headPxS'] = abs(vx)/math.cos(th)
+            res['hs'] = res['headPxS']*mmpx/1000
+        else:
+            chord = math.degrees(math.atan2(-vy, abs(vx)))
+            # the fitted line is a chord of the swing arc: rotate to the tangent at contact
+            res['attack'] = chord + math.degrees((res['hs']/R)*(tContact - tMid))
         res['headFrames'] = len(clean)
     else:
         res['notes'].append('ヘッドを検出できませんでした')
@@ -244,7 +261,8 @@ def analyze(frames, times, ball, trig, club='1W', energy=None, pitch=0.0):
             if direction > 0: diff[:, :int(bx + 0.5*d)] = False
             else: diff[:, int(bx - 0.5*d):] = False
             diff[:max(0, int(by - 14*d))] = False
-            diff[min(H, int(by + 1.0*d)):] = False
+            # from above, a ball starting away from the golfer (toward the camera) goes down
+            diff[min(H, int(by + (4.0 if overhead else 1.0)*d)):] = False
             best = None
             for c in components(diff):
                 if not (0.35*A0 <= c['area'] <= maxArea*A0): continue
@@ -286,9 +304,12 @@ def analyze(frames, times, ball, trig, club='1W', energy=None, pitch=0.0):
     else:
         res['notes'].append('打ち出したボールを追跡できませんでした')
     if 'ballFrames' in res:
-        res['ballPxS'] = math.hypot(vx, vy)
+        if overhead:
+            res['ballPxS'] = abs(vx)/math.cos(math.radians(CLUB_LAUNCH_DEG.get(club, 13.0)))
+        else:
+            res['ballPxS'] = math.hypot(vx, vy)
+            res['launch'] = math.degrees(math.atan2(-vy, abs(vx)))
         res['bs'] = res['ballPxS']*mmpx/1000
-        res['launch'] = math.degrees(math.atan2(-vy, abs(vx)))
     if 'hs' in res and 'bs' in res:
         res['smash'] = res['ballPxS']/res['headPxS']
         res['ok'] = True

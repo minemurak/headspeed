@@ -32,6 +32,7 @@ enum ClipExporter {
             "triggerIndex": clip.triggerIndex,
             "cameraPitch": clip.cameraPitch,
             "rear": clip.rear,
+            "overhead": clip.overhead,
             "focal": clip.focal, "centerX": clip.centerX, "centerY": clip.centerY,
             "club": club.rawValue,
             "notes": result.notes,

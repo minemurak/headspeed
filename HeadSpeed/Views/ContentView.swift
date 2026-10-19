@@ -44,7 +44,7 @@ struct ContentView: View {
                             ForEach(CameraView.allCases) { Text($0.label).tag($0) }
                         }
                         .pickerStyle(.segmented)
-                        .frame(width: 140)
+                        .frame(width: 210)
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
                         Text(engine.formatLabel)
                         Text("シャッター \(engine.shutterLabel)")
@@ -164,6 +164,7 @@ struct StatusPill: View {
         if state == .searching {
             switch view {
             case .front: return "正面から、ボールと同じ高さで2〜3m離して固定してください。"
+            case .overhead: return "正面側の斜め上から見下ろして固定。ボールは画面の左右中央あたりに。打ち出し角・入射角は出ません。"
             case .rear: return "飛球線の真後ろ、ボールから2.5〜3m・腰の高さに固定。ボールが点線枠（画面中央の下寄り）に入るようにしてください。「準備OK」になるまでクラブはボールから離しておきます。別のボールに丸が付いたら、打つボールをタップしてください。"
             }
         }

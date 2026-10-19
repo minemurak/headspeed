@@ -33,13 +33,21 @@ struct ResultCard: View {
             }
 
             Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 4) {
-                GridRow {
-                    metric("ボール初速", result.ballSpeed.map { "\(Fmt.num($0, 1)) m/s" })
-                    metric("打ち出し角", result.launch.map { "\(Fmt.num($0, 1))°" })
-                }
-                GridRow {
-                    metric("入射角", result.attack.map { "\(Fmt.signed($0, 1))°" })
-                    metric("推定キャリー", result.carryYards.map { "\(Int($0.rounded())) yd" })
+                if result.view == .overhead {
+                    // from above the angles are not measured
+                    GridRow {
+                        metric("ボール初速", result.ballSpeed.map { "\(Fmt.num($0, 1)) m/s" })
+                        metric("推定キャリー", result.carryYards.map { "\(Int($0.rounded())) yd" })
+                    }
+                } else {
+                    GridRow {
+                        metric("ボール初速", result.ballSpeed.map { "\(Fmt.num($0, 1)) m/s" })
+                        metric("打ち出し角", result.launch.map { "\(Fmt.num($0, 1))°" })
+                    }
+                    GridRow {
+                        metric("入射角", result.attack.map { "\(Fmt.signed($0, 1))°" })
+                        metric("推定キャリー", result.carryYards.map { "\(Int($0.rounded())) yd" })
+                    }
                 }
                 GridRow {
                     metric("テンポ", result.tempo.map { "\(Fmt.num($0, 1)) : 1" })

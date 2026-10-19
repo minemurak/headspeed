@@ -30,6 +30,29 @@ enum Club: String, CaseIterable, Identifiable, Codable {
         }
     }
 
+    /// Typical launch angle (deg). From above only the ball's motion along the target line is
+    /// trusted; its full speed is that over cos(launch).
+    var typicalLaunch: Double {
+        switch self {
+        case .driver: return 13
+        case .fairway: return 12
+        case .utility: return 14
+        case .iron7: return 17
+        case .wedge: return 27
+        }
+    }
+
+    /// Typical attack angle (deg, down negative): the head's tilt at contact, unseen from above.
+    var typicalAttack: Double {
+        switch self {
+        case .driver: return 0
+        case .fairway: return -2
+        case .utility: return -3
+        case .iron7: return -4
+        case .wedge: return -5
+        }
+    }
+
     /// Typical smash factor range for a well-struck shot.
     var smashRange: ClosedRange<Double> {
         switch self {
@@ -44,13 +67,14 @@ enum Club: String, CaseIterable, Identifiable, Codable {
 
 /// Where the camera stands.
 enum CameraView: String, CaseIterable, Identifiable, Codable {
-    case front, rear
+    case front, overhead, rear
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .front: return "正面"
+        case .overhead: return "上から"
         case .rear: return "後方"
         }
     }

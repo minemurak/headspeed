@@ -28,7 +28,7 @@ struct HistoryView: View {
                         HStack {
                             VStack(alignment: .leading) {
                                 Text(r.date, format: .dateTime.month().day().hour().minute())
-                                Text(r.view == .rear ? "\(r.club.label)・後方" : r.club.label).font(.caption).foregroundStyle(.secondary)
+                                Text((r.view ?? .front) == .front ? r.club.label : "\(r.club.label)・\((r.view ?? .front).label)").font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
                             stat("HS", Fmt.num(r.headSpeed, 1))
